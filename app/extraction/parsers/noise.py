@@ -27,6 +27,9 @@ _MIN_PAGES = 2
 _MIN_NUMBER_RUN = 3
 
 _BARE_NUMBER = re.compile(r"\d{1,4}")
+# A page number typed into the body of a Word document has at most three digits. Four
+# digits are more likely a year, and years count upwards too: 2026, 2027, 2028.
+_BODY_PAGE_NUMBER = re.compile(r"\d{1,3}")
 # "Page 3" or "Page 3 of 9" at the very start or the very end of a line.
 _PAGE_LABEL_AT_AN_END = re.compile(
     r"^page\s+\d+(\s+of\s+\d+)?\b|\bpage\s+\d+(\s+of\s+\d+)?$", re.IGNORECASE
@@ -72,10 +75,12 @@ def flag_body_page_numbers(paragraphs: Sequence[str], in_body: Sequence[bool]) -
     A Word file that was converted from a PDF or from a web page can have its page
     numbers as ordinary paragraphs, in the middle of a clause or even of a sentence.
 
-    A paragraph is flagged when it is a bare number and belongs to a run of at least
-    three such paragraphs that count upwards by one: 2, 3, 4. A run that starts at 1
-    is left alone, because it could just as well be a list someone numbered by hand,
-    and a first page rarely carries its number. `in_body` is False for the rows of a
+    A paragraph is flagged when it is a bare number of at most three digits, and it
+    belongs to a run of at least three such paragraphs that count upwards by one, with
+    text between each of them: 2, text, 3, text, 4. Numbers right next to each other
+    are not page numbers, because a page has text on it. A run that starts at 1 is
+    left alone, because it could just as well be a list someone numbered by hand, and
+    a first page rarely carries its number. `in_body` is False for the rows of a
     table, where a bare number is a figure.
     """
     flags = [False] * len(paragraphs)
@@ -88,10 +93,11 @@ def flag_body_page_numbers(paragraphs: Sequence[str], in_body: Sequence[bool]) -
                 flags[index] = True
 
     for index, (text, eligible) in enumerate(zip(paragraphs, in_body, strict=True)):
-        if not eligible or not _BARE_NUMBER.fullmatch(text.strip()):
+        if not eligible or not _BODY_PAGE_NUMBER.fullmatch(text.strip()):
             continue
         value = int(text)
-        if previous is not None and value != previous + 1:
+        # The next page number is one higher, and comes after the text of a page.
+        if previous is not None and (value != previous + 1 or index == run[-1] + 1):
             flag_run()
             run = []
         run.append(index)

@@ -154,6 +154,7 @@ class UploadSizeLimitMiddleware:
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
         error = FileTooLargeError(self.max_upload_bytes)
+        log.warning("request_refused", code=error.code, status_code=error.status_code)
         response = error_response(error.status_code, error.code, error.message)
         await response(scope, receive, send)
 

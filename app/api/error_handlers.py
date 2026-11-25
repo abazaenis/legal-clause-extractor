@@ -53,6 +53,8 @@ async def _handle_http_error(_request: Request, error: Exception) -> JSONRespons
         code = HTTPStatus(error.status_code).phrase.lower().replace(" ", "_")
     except ValueError:
         code = "http_error"
+    report = log.error if error.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR else log.warning
+    report("request_refused", code=code, status_code=error.status_code)
     return error_response(error.status_code, code, str(error.detail), error.headers)
 
 

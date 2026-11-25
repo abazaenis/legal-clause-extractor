@@ -148,6 +148,24 @@ async def test_refused_request_is_logged_with_its_code_and_not_its_message(
     assert (finished["event"], finished["status_code"]) == ("request_finished", 415)
 
 
+async def test_requests_refused_before_the_endpoint_runs_are_logged_too(
+    client: AsyncClient, settings: Settings
+) -> None:
+    too_large = b"%PDF-1.7\n" + b"0" * (settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES)
+
+    with capture_logs() as logs:
+        await client.post("/api/extract", files=upload(too_large))
+        await client.get("/no-such-path")
+        await client.delete("/api/extractions")
+
+    refused = [
+        (entry["code"], entry["status_code"])
+        for entry in logs
+        if entry["event"] == "request_refused"
+    ]
+    assert refused == [("file_too_large", 413), ("not_found", 404), ("method_not_allowed", 405)]
+
+
 async def test_failure_of_the_llm_is_logged_as_an_error(
     build_app: AppBuilder, settings: Settings
 ) -> None:

@@ -18,8 +18,7 @@ class StoredExtraction:
     """A stored extraction, and whether this request was the one that created it."""
 
     extraction: Extraction
-    # False when the file already had a stored result, whether it was returned as it
-    # is or replaced by a new one.
+    # False when the file already had a stored result, which is then returned as it is.
     created: bool
 
 
@@ -42,7 +41,7 @@ class ExtractionPage:
 
 
 class ExtractionRepository:
-    """The stored extractions, one per file.
+    """The stored extractions, one per file, each written once and never changed.
 
     Every method opens a session of its own and closes it before it returns, so no
     database connection is held while the LLM works on a request. A single extraction
@@ -55,7 +54,12 @@ class ExtractionRepository:
     async def find_by_sha256(self, sha256: str) -> Extraction | None:
         """Return the stored extraction of the file with this hash, if there is one."""
         async with self._session_factory() as session:
-            return await self._find(session, sha256)
+            extraction: Extraction | None = await session.scalar(
+                select(Extraction)
+                .where(Extraction.sha256 == sha256)
+                .options(selectinload(Extraction.clauses))
+            )
+            return extraction
 
     async def find_by_id(self, extraction_id: uuid.UUID) -> Extraction | None:
         """Return the stored extraction with this id, if there is one."""
@@ -100,44 +104,28 @@ class ExtractionRepository:
         )
 
     async def save(self, source: SourceFile, result: ExtractionResult) -> StoredExtraction:
-        """Store the result for a file, in one transaction.
+        """Store the result for a file in one transaction, unless the file has one already.
 
-        A file has one stored result. If the file already has one, the new result
-        takes its place and the id stays the same.
+        A stored result is never replaced. Two requests for the same new file can both
+        run the pipeline: the first one to write stores its result, and the other one
+        finds the hash taken and gets that stored result back.
         """
+        row = Extraction(sha256=source.sha256)
+        _fill(row, source, result)
         try:
-            return await self._save(source, result)
-        except IntegrityError:
-            # Two requests for the same new file can both find nothing stored and both
-            # insert. The unique hash lets one of them through. The other one ends up
-            # here, finds the row on its second attempt and replaces the result.
-            return await self._save(source, result)
-
-    async def _save(self, source: SourceFile, result: ExtractionResult) -> StoredExtraction:
-        async with self._session_factory() as session, session.begin():
-            row = await self._find(session, source.sha256)
-            created = row is None
-            if row is None:
-                row = Extraction(sha256=source.sha256)
+            async with self._session_factory() as session, session.begin():
                 session.add(row)
-            else:
-                # The old clauses must be gone before the new ones take their positions.
-                row.clauses.clear()
-                await session.flush()
-            _fill(row, source, result)
-        return StoredExtraction(extraction=row, created=created)
-
-    async def _find(self, session: AsyncSession, sha256: str) -> Extraction | None:
-        extraction: Extraction | None = await session.scalar(
-            select(Extraction)
-            .where(Extraction.sha256 == sha256)
-            .options(selectinload(Extraction.clauses))
-        )
-        return extraction
+        except IntegrityError:
+            stored = await self.find_by_sha256(source.sha256)
+            if stored is None:
+                # Not the unique hash: the result itself broke a rule of the database.
+                raise
+            return StoredExtraction(extraction=stored, created=False)
+        return StoredExtraction(extraction=row, created=True)
 
 
 def _fill(row: Extraction, source: SourceFile, result: ExtractionResult) -> None:
-    """Write a result into a row. The row is replaced as a whole, never in part."""
+    """Write a result into a new row."""
     row.created_at = datetime.now(UTC)
 
     row.filename = source.filename

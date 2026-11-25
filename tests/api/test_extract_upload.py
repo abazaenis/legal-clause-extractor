@@ -27,10 +27,10 @@ def upload(
     return {"file": (filename, data, media_type)}
 
 
-async def post(app: FastAPI, pdf: bytes, **params: str) -> Response:
+async def post(app: FastAPI, pdf: bytes) -> Response:
     """Upload a contract to this application."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        return await client.post(URL, files=upload(pdf), params=params)
+        return await client.post(URL, files=upload(pdf))
 
 
 def padding_that_starts_like_a_pdf(size: int) -> bytes:
@@ -358,45 +358,6 @@ async def test_same_content_under_another_name_is_the_same_document(
     assert len(llm.calls) == 1
 
 
-async def test_overwrite_extracts_the_file_again_and_keeps_the_document_id(
-    build_app: AppBuilder, settings: Settings
-) -> None:
-    pdf = contract()
-    one_part = {"clauses": [{"line": 2, "type": "other"}]}
-    llm = FakeLLMProvider(ANSWER, one_part)
-    app = build_app(settings, llm)
-    first = await post(app, pdf)
-
-    replaced = await post(app, pdf, overwrite="true")
-
-    assert replaced.status_code == 200
-    assert replaced.json()["document_id"] == first.json()["document_id"]
-    assert len(llm.calls) == 2
-    # The stored result is the new one, as a whole.
-    assert [clause["type"] for clause in replaced.json()["clauses"]] == ["other"]
-    assert replaced.json()["metadata"]["title"] is None
-    assert (await post(app, pdf)).json() == replaced.json()
-
-
-async def test_overwrite_of_a_file_that_was_never_extracted_creates_it(
-    build_app: AppBuilder, settings: Settings
-) -> None:
-    response = await post(build_app(settings, FakeLLMProvider(ANSWER)), contract(), overwrite="1")
-
-    assert response.status_code == 201
-
-
-async def test_overwrite_must_be_a_boolean(client: AsyncClient, llm: FakeLLMProvider) -> None:
-    pdf = build_pdf([["1. Definitions."]])
-
-    response = await client.post(URL, files=upload(pdf), params={"overwrite": "maybe"})
-
-    assert response.status_code == 422
-    assert error_code(response) == "invalid_request"
-    assert "overwrite" in response.json()["error"]["message"]
-    assert llm.calls == []
-
-
 async def test_failed_extraction_is_not_stored(build_app: AppBuilder, settings: Settings) -> None:
     pdf = contract()
     llm = FakeLLMProvider(LLMUnavailableError("The provider is unavailable."), ANSWER)
@@ -701,14 +662,11 @@ async def test_answer_that_needs_too_many_fixes_is_a_bad_gateway(
 # --- The documentation -----------------------------------------------------------------------
 
 
-async def test_openapi_documents_both_outcomes_and_the_overwrite_option(
-    client: AsyncClient,
-) -> None:
+async def test_openapi_documents_both_outcomes(client: AsyncClient) -> None:
     operation = (await client.get("/openapi.json")).json()["paths"]["/api/extract"]["post"]
 
     for status in ("200", "201"):
         reference = operation["responses"][status]["content"]["application/json"]["schema"]["$ref"]
         assert reference.endswith("/ExtractionResponse")
-    assert [(parameter["name"], parameter["in"]) for parameter in operation["parameters"]] == [
-        ("overwrite", "query")
-    ]
+    # The file is the only input: there are no query parameters.
+    assert "parameters" not in operation

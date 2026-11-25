@@ -144,9 +144,11 @@ async def test_document_without_pages_or_metadata_can_be_stored(
     assert (found.clauses[0].start_page, found.clauses[0].end_page) == (None, None)
 
 
-async def test_storing_the_same_file_again_replaces_its_result_and_keeps_the_id(
+async def test_storing_the_same_file_again_keeps_the_stored_result(
     extractions: ExtractionRepository, session: AsyncSession
 ) -> None:
+    """Two requests for the same new file can both run the pipeline and both save. The
+    first one to write wins. The other one finds the hash taken and gets that result."""
     first = await extractions.save(SOURCE, result(clause(0), clause(1), clause(2)))
     renamed = replace(SOURCE, filename="nda-final.pdf")
 
@@ -156,14 +158,15 @@ async def test_storing_the_same_file_again_replaces_its_result_and_keeps_the_id(
 
     assert not second.created
     assert second.extraction.id == first.extraction.id
-    assert second.extraction.created_at >= first.extraction.created_at
-    found = await extractions.find_by_sha256(SOURCE.sha256)
-    assert found is not None
-    # The row is replaced as a whole: nothing of the first result is left.
-    assert (found.filename, found.title, found.parties) == ("nda-final.pdf", None, [])
-    assert [(c.position, c.type) for c in found.clauses] == [(0, "preamble")]
+    assert second.extraction.created_at == first.extraction.created_at
+    # The stored result is the first one, untouched.
+    assert (second.extraction.filename, second.extraction.title) == (
+        "nda.pdf",
+        "MUTUAL NON-DISCLOSURE AGREEMENT",
+    )
+    assert [c.number for c in second.extraction.clauses] == ["1", "2", "3"]
     assert await count(session, Extraction) == 1
-    assert await count(session, Clause) == 1
+    assert await count(session, Clause) == 3
 
 
 async def test_result_is_stored_completely_or_not_at_all(
@@ -177,49 +180,6 @@ async def test_result_is_stored_completely_or_not_at_all(
 
     assert await count(session, Extraction) == 0
     assert await count(session, Clause) == 0
-
-
-async def test_failed_replacement_leaves_the_stored_result_as_it_was(
-    extractions: ExtractionRepository, session: AsyncSession
-) -> None:
-    await extractions.save(SOURCE, result(clause(0), clause(1)))
-    broken = result(clause(0, start_line=9, end_line=3), metadata=ContractMetadata())
-
-    with pytest.raises(IntegrityError):
-        await extractions.save(SOURCE, broken)
-
-    found = await extractions.find_by_sha256(SOURCE.sha256)
-    assert found is not None
-    assert found.title == "MUTUAL NON-DISCLOSURE AGREEMENT"
-    assert [c.number for c in found.clauses] == ["1", "2"]
-    assert await count(session, Clause) == 2
-
-
-class LateRepository(ExtractionRepository):
-    """Looks for the file a moment too early: another request is just about to store it."""
-
-    looked = False
-
-    async def _find(self, session: AsyncSession, sha256: str) -> Extraction | None:
-        if not self.looked:
-            self.looked = True
-            return None
-        return await super()._find(session, sha256)
-
-
-async def test_two_requests_storing_the_same_new_file_leave_one_row(
-    engine: AsyncEngine, extractions: ExtractionRepository, session: AsyncSession
-) -> None:
-    winner = await extractions.save(SOURCE, result(clause(0)))
-    late = LateRepository(create_session_factory(engine))
-
-    # This insert collides with the unique hash. The repository tries once more.
-    loser = await late.save(SOURCE, result(clause(0), clause(1)))
-
-    assert not loser.created
-    assert loser.extraction.id == winner.extraction.id
-    assert await count(session, Extraction) == 1
-    assert await count(session, Clause) == 2
 
 
 async def test_no_connection_is_held_between_calls(
@@ -301,20 +261,6 @@ async def test_page_is_cut_by_limit_and_offset(extractions: ExtractionRepository
     assert await names(2, 2) == ["contract-3.pdf", "contract-2.pdf"]
     assert await names(2, 4) == ["contract-1.pdf"]
     assert await names(2, 6) == []
-
-
-async def test_replaced_result_is_the_newest_again(extractions: ExtractionRepository) -> None:
-    await extractions.save(file_number(1), result())
-    await extractions.save(file_number(2), result())
-
-    await extractions.save(file_number(1), result())
-
-    page = await extractions.list_page(limit=10, offset=0)
-    assert [listed.extraction.filename for listed in page.items] == [
-        "contract-1.pdf",
-        "contract-2.pdf",
-    ]
-    assert page.total == 2
 
 
 async def test_page_of_nothing_is_empty(extractions: ExtractionRepository) -> None:

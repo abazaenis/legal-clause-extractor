@@ -18,7 +18,7 @@ class ErrorDetail(BaseModel):
     )
     message: str = Field(
         description="Explanation meant for a person.",
-        examples=["Only PDF files are supported."],
+        examples=["Only PDF and Word (.docx) files are supported."],
     )
 
 

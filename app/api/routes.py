@@ -32,12 +32,12 @@ _EXTRACT_RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     status.HTTP_200_OK: {
         "model": ExtractionResponse,
-        "description": "The file was extracted before. Its stored result is returned and no "
-        "LLM call is made, or with `overwrite=true` the stored result was replaced.",
+        "description": "The file already has a stored result, which is returned as it is.",
     },
     status.HTTP_413_CONTENT_TOO_LARGE: {
         "model": ErrorResponse,
-        "description": "The file is larger than the configured limit.",
+        "description": "The file is larger than the configured limit, or it is a Word "
+        "document that unpacks to more than 50 MB.",
     },
     status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {
         "model": ErrorResponse,
@@ -52,8 +52,9 @@ _EXTRACT_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_502_BAD_GATEWAY: {
         "model": ErrorResponse,
         "description": "The LLM provider failed or refused the request, or its answer could "
-        "not be used: it was empty, was not valid JSON, or needed more than 10% of its "
-        "clause starts corrected.",
+        "not be used: it was empty, was not a JSON object, was cut off at the output "
+        "limit, had no usable clause start, or needed more than 10% of its clause starts "
+        "corrected.",
     },
     status.HTTP_504_GATEWAY_TIMEOUT: {
         "model": ErrorResponse,
@@ -76,13 +77,6 @@ async def extract(
     parsers: ParserFactoryDependency,
     llm: LLMProviderDependency,
     extractions: ExtractionRepositoryDependency,
-    overwrite: Annotated[
-        bool,
-        Query(
-            description="Extract the file again even if it has a stored result. The new "
-            "result replaces the stored one and the document id stays the same."
-        ),
-    ] = False,
 ) -> ExtractionResponse:
     """Upload one contract as multipart form data, in a field named `file`.
 
@@ -95,9 +89,7 @@ async def extract(
     stored result with `200`, without calling the LLM.
     """
     source = await read_upload(file, max_bytes=settings.max_upload_bytes)
-    stored = await extract_and_store(
-        source, overwrite=overwrite, parsers=parsers, llm=llm, extractions=extractions
-    )
+    stored = await extract_and_store(source, parsers=parsers, llm=llm, extractions=extractions)
     if stored.created:
         response.headers["Location"] = router.url_path_for(
             "get_extraction", document_id=str(stored.extraction.id)
