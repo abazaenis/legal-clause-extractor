@@ -62,7 +62,7 @@ One run of all seven samples: `deepseek-flash`, reasoning effort `high`, prompt 
 | Master agreement, Word | 113 lines | 99 | 111 s |
 
 - **Every sample was also checked by hand.** Of 520 clear-cut clause starts, the API found all 520. Its 14 extra parts were judgement calls, such as unnumbered headings and template placeholders. Every clause number and every clause text matched the document exactly.
-- **Reasoning effort trades time for recall.** At `none`, the service agreement took 6 s instead of 150 s, but it gave 53 parts instead of 59 and missed Exhibit A.
+- **Reasoning effort trades time for recall.** At `none`, the service agreement took 6 s instead of 150 s, but it gave 53 parts instead of 59 and missed Exhibit A. `.env.example` uses `none`, so the demo runs in seconds; set `high` for the thorough run.
 
 ## Design decisions
 
