@@ -4,24 +4,7 @@ A FastAPI service that splits a contract (PDF or Word) into its clauses and stor
 
 ## How it works
 
-```mermaid
-flowchart TD
-    client(["Client"]) -->|"POST /api/extract with one PDF or Word file"| checks["Check the upload:<br/>size, not empty, file type by content"]
-    checks -->|"rejected"| reject["413, 415 or 422"]
-    checks -->|"accepted"| known{"Same file<br/>extracted before?"}
-    known -->|"yes"| stored["200 with the stored result,<br/>no LLM call"]
-    known -->|"no"| parse["Parse into numbered lines,<br/>page headers, footers and page numbers flagged"]
-    parse -->|"encrypted, damaged, too long or no text"| unreadable["422, or 413 for a Word file<br/>that unpacks to over 50 MB"]
-    parse --> llm["One LLM call:<br/>clause start lines, labels and metadata"]
-    llm -->|"provider error or unusable answer"| fail["502, or 504 on a timeout"]
-    llm --> repair["Repair the answer in code:<br/>one warning per fix, no second call"]
-    repair -->|"more than 10% of the clause starts needed fixing"| fail
-    repair --> cut["Cut the text of each clause out of the document"]
-    cut --> verify["Check every string the model returned against that text"]
-    verify --> store[("SQLite: extractions and clauses,<br/>written in one transaction")]
-    store --> created["201 with the full result"]
-    reader(["Client"]) -->|"GET /api/extractions and GET /api/extractions/{document_id}"| store
-```
+![How it works](docs/diagrams/how-it-works.svg)
 
 Only one step calls the LLM. Everything else is deterministic code.
 
@@ -75,7 +58,11 @@ One run of all seven samples: `deepseek-flash`, reasoning effort `high`, prompt 
 
 ## Design decisions
 
+![Components](docs/diagrams/components.svg)
+
 ### How the LLM is used
+
+![The model returns start lines, code cuts the clauses](docs/diagrams/core-idea.svg)
 
 - **The model returns line numbers, never text.** The parser numbers the lines. The model says on which line each clause starts, gives the clause's label, number and title, and adds a few facts about the contract. Code cuts the text. Because the answer is small, a 176-page contract fits in one call.
 - **It gives starts, not ranges.** A clause runs until the next start, so clauses cannot overlap or leave gaps. The worst failure is two clauses merged, with every word still present.
@@ -120,7 +107,7 @@ Each string the model returns must then be found in the document. A clause numbe
 
 ### Data model
 
-Two tables. **`extractions`** has one row per file: the file facts (with a unique SHA-256), the metadata, the LLM run, the warnings and the page noise. **`clauses`** has one row per clause, in document order.
+![Data model](docs/diagrams/data-model.svg)
 
 In production I would split further:
 
