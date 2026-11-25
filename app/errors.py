@@ -34,6 +34,31 @@ class EmptyFileError(AppError):
     code = "empty_file"
 
 
+class EncryptedFileError(AppError):
+    status_code = 422
+    code = "file_encrypted"
+
+
+class UnreadableFileError(AppError):
+    """The file has the right type but is damaged, or is not really that type."""
+
+    status_code = 422
+    code = "file_unreadable"
+
+
+class TooManyPagesError(AppError):
+    status_code = 422
+    code = "too_many_pages"
+
+    def __init__(self, page_count: int, max_pages: int) -> None:
+        super().__init__(f"The file has {page_count} pages. The limit is {max_pages}.")
+
+
+class NoTextFoundError(AppError):
+    status_code = 422
+    code = "no_text_found"
+
+
 class NotImplementedYetError(AppError):
     """A step of the pipeline that has not been built yet."""
 

@@ -33,7 +33,8 @@ class Extraction(Base):
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int]
-    page_count: Mapped[int]
+    # Null for formats that have no pages.
+    page_count: Mapped[int | None]
     sha256: Mapped[str] = mapped_column(String(64), unique=True)
 
     # Contract metadata read from the document. Null means not found, or not verifiable
@@ -75,7 +76,15 @@ class Clause(Base):
         UniqueConstraint("extraction_id", "position", name="uq_clauses_extraction_id_position"),
         CheckConstraint("position >= 0", name="position_not_negative"),
         CheckConstraint("start_line >= 1 AND end_line >= start_line", name="line_range_valid"),
-        CheckConstraint("start_page >= 1 AND end_page >= start_page", name="page_range_valid"),
+        # Pages are either both absent or a valid range. A check constraint only fails
+        # when its result is false, and a comparison with NULL is unknown, not false.
+        # The IS NOT NULL tests make half a range (one page set, one missing) false.
+        CheckConstraint(
+            "(start_page IS NULL AND end_page IS NULL) "
+            "OR (start_page IS NOT NULL AND end_page IS NOT NULL "
+            "AND start_page >= 1 AND end_page >= start_page)",
+            name="page_range_valid",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid7)
@@ -93,7 +102,8 @@ class Clause(Base):
     # Where the clause sits in the source document (one-based, inclusive).
     start_line: Mapped[int]
     end_line: Mapped[int]
-    start_page: Mapped[int]
-    end_page: Mapped[int]
+    # Null for formats that have no pages.
+    start_page: Mapped[int | None]
+    end_page: Mapped[int | None]
 
     extraction: Mapped[Extraction] = relationship(back_populates="clauses")

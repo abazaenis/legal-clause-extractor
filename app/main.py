@@ -6,6 +6,7 @@ from app.api.error_handlers import register_error_handlers
 from app.api.middleware import UploadSizeLimitMiddleware
 from app.api.routes import router
 from app.config import Settings, get_settings
+from app.extraction.parsers.factory import build_parser_factory
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -19,6 +20,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "the clause text is always copied from the source document by code.",
     )
     app.state.settings = settings
+    app.state.parser_factory = build_parser_factory(max_pages=settings.max_pages)
 
     app.add_middleware(UploadSizeLimitMiddleware, max_upload_bytes=settings.max_upload_bytes)
     register_error_handlers(app)

@@ -6,13 +6,13 @@
 
 ```mermaid
 flowchart TD
-    client(["Client"]) -->|"POST /api/extract with one PDF"| checks["Check the upload:<br/>size, file type, encryption, page count, text layer"]
+    client(["Client"]) -->|"POST /api/extract with one PDF"| checks["Check the upload:<br/>size, not empty, file type by content"]
     checks -->|"rejected"| reject["413, 415 or 422"]
     checks -->|"accepted"| known{"Same file already extracted,<br/>and no overwrite requested?"}
     known -->|"yes"| stored["200 with the stored extraction,<br/>no LLM call"]
-    known -->|"no"| parse["Parse the PDF into numbered lines<br/>pdfplumber, in a worker thread"]
-    parse --> noise["Flag repeated page headers,<br/>footers and page numbers"]
-    noise --> llm["One LLM call:<br/>returns clause start lines, labels and metadata"]
+    known -->|"no"| parse["The parser for the file type returns numbered lines<br/>PDF: pdfplumber in a worker thread, with page headers,<br/>footers and page numbers flagged"]
+    parse -->|"encrypted, damaged, too long or no text"| unreadable["422"]
+    parse --> llm["One LLM call:<br/>returns clause start lines, labels and metadata"]
     llm --> valid{"Is the answer<br/>structurally valid?"}
     valid -->|"no, first time"| llm
     valid -->|"no, second time"| fail["502"]
@@ -37,7 +37,7 @@ The LLM never writes contract text. Code parses the document into numbered lines
 - **Structural errors fail loudly.** If a line number does not exist or the order is wrong, the model is asked once more with the error. After that the request fails with `502`; there are no partial results.
 - **Every string the model returns is checked against the source.** Clause numbers and titles must appear in the clause's first line, and metadata values must appear in the document. A value that fails the check becomes null and is reported in `warnings`.
 - **Dates are parsed by code** from the text as written in the contract.
-- **Page headers, footers and page numbers are flagged, not deleted.** A conservative rule flags them before the call. Flagged lines are left out of the prompt and of the clause text, line numbers do not change, and the response lists what was left out. A line the rule misses stays inside a clause, because leaving noise in is safer than dropping contract text.
+- **Page headers, footers and page numbers are flagged, not deleted.** The PDF parser flags them with three conservative rules, described below. Flagged lines are left out of the prompt and of the clause text, line numbers do not change, and the response lists what was left out. A line the rule misses stays inside a clause, because leaving noise in is safer than dropping contract text.
 
 What this guarantees is narrow and checkable: the model cannot alter contract text. It can still put a boundary in the wrong place or pick the wrong label, and the checks above are there to catch that.
 
@@ -51,7 +51,33 @@ What this guarantees is narrow and checkable: the model cannot alter contract te
 - **Retries, backoff and timeouts come from the SDK**, configured once, with one overall deadline per request.
 - **DeepSeek is a development default, chosen for cost.** For real client contracts the provider has to be chosen on its data terms (region, retention, use for training), which is the reason it is configuration.
 
-### PDF parsing
+### Document parsers
+
+- **One interface, one parser per format.** A parser takes a validated file and returns a `ParsedDocument`. Everything format-specific stays inside it: how the text is read, what counts as a line, and how page noise is recognised.
+- **A factory picks the parser by file type.** Supporting a new format takes one parser class and one line in the factory.
+- **Every parser returns the same output**: the document's lines in reading order, each with a number, its text, an optional page and a noise flag. The rest of the pipeline only ever sees this output, so it never knows whether the file was a PDF or something else.
+- **Page fields are optional**, in that output and in the database. A Word document has paragraphs but no pages, so a future Word parser leaves them empty.
+- **Parsing runs in a worker thread**, so it does not block the event loop.
+- **Hidden text never reaches the prompt.** White text on a white background is invisible to a reader, which makes it the obvious place to plant instructions for the LLM. The PDF parser leaves it out and reports it in `warnings`, quoting what it left out, so nothing disappears silently. White text on a coloured shape or on an image is visible and is kept. One of the sample NDAs carries such a line: "Updated 2016".
+- **Lines are grouped with a tolerance of 5 points.** pdfplumber's default of 3 puts a clause number set in a larger font on a line of its own, above its title, as in "1. All Users Must Have a Permissible Purpose" in the sample service agreement.
+
+#### Page noise
+
+Running headers, footers and page numbers are found by a pure function next to the PDF parser. It flags lines; it never removes or renumbers them. Three rules apply, each deliberately conservative, because a stray footer left inside a clause is harmless and dropped contract text is not:
+
+1. A line that sits in the top or bottom three lines of at least half of the pages is a header or footer. The lines must be identical apart from a page label such as "Page 3 of 9". No other number is ignored, so table rows and numbered headings never match.
+2. The outermost remaining line of a page is a page number if it is written like one: `Page 4`, `- 3 -`, `ii`, `B-7`.
+3. Outermost lines that are bare numbers are page numbers if they count upwards from page to page.
+
+On the sample contracts this flags every header, footer and page number, and nothing else:
+
+| Sample | Lines | Flagged | What was flagged |
+|---|---|---|---|
+| NDA, 3 pages | 87 | 2 | `Page 2 of 3` and `Page 3 of 3` |
+| Service agreement, 23 pages | 822 | 45 | The footer on 23 pages and the page number on 22 |
+| Agreement, 176 pages | 3,514 | 528 | The header and footer on all 176 pages, a second header on 89, and the page numbers and appendix labels |
+
+#### Choice of PDF library
 
 I compared two permissively licensed libraries on the sample contracts (Python 3.14, best of three runs):
 
@@ -64,14 +90,12 @@ I compared two permissively licensed libraries on the sample contracts (Python 3
 
 I chose pdfplumber. pypdfium2 is 20 to 40 times faster, but it returns text in the order it is stored in the file, so footers and page numbers land at the top or in the middle of a page. pdfplumber returns lines in visual order, top to bottom, which is what numbering the lines and removing page headers and footers depend on. Correctness matters more than speed here, and a few seconds of parsing is small next to the LLM call. PyMuPDF was not a candidate because it is AGPL-licensed.
 
-Parsing runs in a worker thread so it does not block the event loop.
-
 ### Data model
 
 Two tables:
 
 - `extractions`, one row per file. The same file always maps to the same row and the same id, enforced by a unique constraint on the SHA-256 of its bytes. The row holds the file facts (name, size, page count, hash), the contract metadata, the LLM run facts (model, prompt version, token usage, duration), any warnings, and the page noise that was left out of the clause text.
-- `clauses`, one row per clause in document order: its position, type, number, title, text, and where it sits in the source (lines and pages).
+- `clauses`, one row per clause in document order: its position, type, number, title, text, and where it sits in the source (lines, and pages for formats that have them).
 
 I kept it at two tables on purpose. A row is written once and only ever replaced as a whole, nothing queries inside the JSON columns, and the API exposes the document and its extraction as a single resource. These are the splits I would make in production, and what would trigger each:
 
@@ -92,6 +116,8 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 
 **Flat clauses.** Clauses are stored without a level or a parent. The hierarchy is still visible in each clause's number, and storing it explicitly is on the list of later work.
 
+**Migrations run with SQLite foreign keys off.** SQLite changes a table by rebuilding it: copy the rows, drop the old table, rename the new one. With foreign keys enforced, dropping `extractions` deletes its rows first, and the cascade silently takes every clause with them. The second migration did exactly that until the migrations got their own engine without the foreign-key setting. A test now runs the migrations over existing rows and checks that they are all still there.
+
 ### API
 
 - **One file per request.** `POST /api/extract` takes a single PDF as multipart form data, runs the extraction synchronously and returns `201` with the full result and a `Location` header.
@@ -105,7 +131,7 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 
 ## What I'd do with more time
 
-The submission is deliberately scoped to the core flow. These are the things I left out on purpose, with the reason each one matters. The first is what I would build next; the rest are grouped by theme.
+The submission is deliberately scoped to the core flow. These are the things I left out on purpose, with the reason each one matters. The first two are what I would do next; the rest are grouped by theme.
 
 ### First: divide and conquer for long contracts
 
@@ -118,6 +144,14 @@ The whole contract goes to the LLM in a single call. A long contract is therefor
 
 Because the model only returns line numbers, the merge is a sort and there is nothing to reconcile. The care is needed at chunk edges, where a chunk can begin in the middle of a clause.
 
+### Second: side-by-side columns and tables
+
+This is a known bug in the PDF parser. Text that sits side by side on a page is merged into one line, left to right. It shows up in all five sample PDFs, for example in the signature blocks: two signatories next to each other come out as "Juan Carlos Bonell Stuart Lacey".
+
+None of the samples has a clause in columns or in a table, so no clause text is affected today. A contract whose clauses do run in two columns would break badly: every line would mix two clauses, the line numbers would be meaningless, and the extraction would be wrong while looking fine. That is why this sits near the top of the list.
+
+The fix is to detect columns and table cells from the positions of the words before lines are built, and to read each column or cell on its own.
+
 ### Ingestion and processing
 
 - **Direct-to-storage uploads.** The API receives the file bytes itself. In production I would hand the client a pre-signed upload URL, so the file goes straight to object storage and the API only ever handles a reference to it. That keeps large PDF and Word payloads off the application servers and gives virus scanning, encryption at rest and retention policies an obvious home.
@@ -125,8 +159,9 @@ Because the model only returns line numbers, the merge is a sort and there is no
 - **Batch uploads.** `POST /api/extract` accepts one file per request. I would let it take several files and process them in parallel, which is faster for the client than uploading them one by one. Each file would get its own result or its own error, so one bad file does not fail the batch. This fits best on top of the background-job design above, where every file becomes its own job.
 - **Cancellation.** Once extraction runs as a job, cancelling an upload should also cancel the in-flight LLM call, so we stop paying for output nobody will read.
 - **Documents and extraction runs.** A file has one stored result, keyed by its hash. I would split that into `documents` and `extraction_runs`, with duplicate detection scoped per customer. The reasons are in the data model section above.
+- **Word documents.** A second parser behind the same interface, with paragraphs as lines and no pages. Two things in the sample files need care: Word generates clause numbers from paragraph styles, so they are not in the text, and one file has page numbers as ordinary paragraphs in the middle of sentences.
 - **Scanned documents.** A PDF without a text layer needs OCR. I would add it as a separate, explicitly lower-confidence path, because an OCR error in a contract is not cosmetic. OCR is slow per page, so this is also where splitting the work by page and running it in parallel pays off; plain text extraction is fast enough not to need it.
-- **Tables and complex layouts.** Plain text extraction flattens tables and multi-column pages. A layout-aware parser would keep them as structured data.
+- **Filled-in form fields.** In the notice-address form of the sample service agreement, the typed values are interleaved with the underscores of the blank lines: `P_.O._ B_o_x_ 7_6_6` and `4_7_9-4_3_9-_9_1_7_4`. Every character is there, but the text is neither readable nor searchable. It only affects that form, which is not extracted as a clause.
 
 ### Extraction quality
 
@@ -150,7 +185,7 @@ Because the model only returns line numbers, the merge is a sort and there is no
 - **PostgreSQL and keyset pagination** in place of SQLite and offset pagination.
 - **Parse PDFs in a process pool.** pdfplumber is pure Python, so a long parse slows other requests while it runs. A process pool would isolate it.
 - **Health checks.** Liveness and readiness endpoints for the container orchestrator and load balancer.
-- **Prompt-injection hardening.** Contract text is untrusted input to the model. The model has no tools and its output is validated against the source, which limits what an injected instruction can do. I would add adversarial test contracts and monitoring for unusual outputs.
+- **Prompt-injection hardening.** Contract text is untrusted input to the model. The model has no tools and its output is validated against the source, which limits what an injected instruction can do, and white text on a white background is already left out. Other ways to hide text are not covered yet: an invisible text rendering mode, a tiny font, text placed outside the page, text covered by a shape, and text in the same colour as a coloured background. I would add those, along with adversarial test contracts and monitoring for unusual outputs.
 - **CORS**, restricted to known origins, once a browser client exists.
 - **Response compression at the edge** (reverse proxy or gateway) and not in the application.
 

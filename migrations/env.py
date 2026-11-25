@@ -7,11 +7,12 @@ from typing import Literal
 from alembic import context
 from alembic.autogenerate.api import AutogenContext
 from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.db import models  # noqa: F401  (importing registers the tables on Base.metadata)
 from app.db.base import Base
-from app.db.session import create_engine
 from app.db.types import UTCDateTime
 
 config = context.config
@@ -62,8 +63,16 @@ def _run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    """Run the migrations through the same engine factory the application uses."""
-    engine = create_engine(get_settings().database_url)
+    """Run the migrations against the database the application uses.
+
+    The engine is deliberately not the application's own. That one switches SQLite
+    foreign keys on, and SQLite changes a table by rebuilding it: copy the rows to a
+    new table, drop the old one, rename. Dropping a table while foreign keys are
+    enforced deletes its rows first, and the cascade would take every row that
+    refers to them. A plain engine leaves foreign keys off, which is what SQLite
+    itself prescribes for this procedure.
+    """
+    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
     async with engine.connect() as connection:
         await connection.run_sync(_run_migrations)
     await engine.dispose()

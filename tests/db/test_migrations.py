@@ -1,5 +1,6 @@
 """The migrations and the models describe the same schema."""
 
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -56,6 +57,81 @@ def test_upgrade_builds_the_schema_the_models_describe(
         engine.dispose()
 
     assert differences == []
+
+
+FIRST_REVISION = "17c3c882bce3"
+
+
+def insert_extraction_with_two_clauses(database: Path) -> None:
+    """Store rows the way the first revision's schema expects them."""
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO extractions (id, created_at, filename, content_type, size_bytes,"
+            " page_count, sha256, parties, llm_provider, llm_model, prompt_version,"
+            " input_tokens, output_tokens, llm_duration_ms, warnings, page_noise)"
+            " VALUES ('e1', '2026-01-01 00:00:00', 'nda.pdf', 'application/pdf', 1, 3, 'hash',"
+            " '[]', 'fake', 'fake-model', 'v1', 1, 1, 1, '[]', '[]')"
+        )
+        connection.executemany(
+            "INSERT INTO clauses (id, extraction_id, position, type, text, start_line,"
+            " end_line, start_page, end_page) VALUES (?, 'e1', ?, 'other', 'Text.', 1, 1, 1, 1)",
+            [("c0", 0), ("c1", 1)],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def row_counts(database: Path) -> dict[str, int]:
+    connection = sqlite3.connect(database)
+    try:
+        return {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("extractions", "clauses")
+        }
+    finally:
+        connection.close()
+
+
+def test_migrations_keep_the_rows_that_are_already_stored(
+    database_file: Path, alembic_config: Config
+) -> None:
+    """SQLite changes a table by rebuilding it, which must not lose data.
+
+    With foreign keys enforced during a migration, dropping the old `extractions`
+    table cascades into `clauses` and silently deletes every clause.
+    """
+    command.upgrade(alembic_config, FIRST_REVISION)
+    insert_extraction_with_two_clauses(database_file)
+
+    command.upgrade(alembic_config, "head")
+    assert row_counts(database_file) == {"extractions": 1, "clauses": 2}
+
+    command.downgrade(alembic_config, FIRST_REVISION)
+    assert row_counts(database_file) == {"extractions": 1, "clauses": 2}
+
+
+def test_migrated_schema_accepts_rows_without_pages(
+    database_file: Path, alembic_config: Config
+) -> None:
+    command.upgrade(alembic_config, FIRST_REVISION)
+    insert_extraction_with_two_clauses(database_file)
+    command.upgrade(alembic_config, "head")
+
+    connection = sqlite3.connect(database_file)
+    try:
+        # No pages at all is fine.
+        connection.execute("UPDATE extractions SET page_count = NULL")
+        connection.execute("UPDATE clauses SET start_page = NULL, end_page = NULL WHERE id = 'c0'")
+        connection.commit()
+
+        # Half a page range is not.
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE clauses SET start_page = NULL WHERE id = 'c1'")
+    finally:
+        connection.close()
 
 
 def test_downgrade_removes_every_table(database_file: Path, alembic_config: Config) -> None:
