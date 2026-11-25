@@ -66,7 +66,7 @@ One run of all seven samples: `deepseek-flash`, reasoning effort `high`, prompt 
 
 ## How I used AI
 
-I used two models in two roles. Claude Code wrote the code, in one long chat. A second model reviewed with me: I used it as a rubber duck to talk a design through, question a change, or read a diff before I accepted it. The decisions stayed with me. The full Claude Code chat is exported and can be shared.
+I used two models in two roles. Claude Code wrote the code, in one long chat. A second model reviewed with me: I used it as a rubber duck to talk a design through, question a change, or read a diff before I accepted it. The decisions stayed with me. The full Claude Code chat is in [docs/chat-transcript.md](docs/chat-transcript.md): every message on both sides, with one line per tool call.
 
 **How I worked.** Scope and design came first, in conversation, before any code. I set the core rule myself: everything that can be deterministic is code, and the LLM only points at line numbers. After that, each piece got its own branch and pull request. I named the next piece, read the result, and accepted it or sent it back with a precise rule and a test case.
 
