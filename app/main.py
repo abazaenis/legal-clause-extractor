@@ -62,7 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Contract Clause Extractor",
-        version="0.1.0",
+        version="1.0.0",
         description="Splits a contract into its clauses. An LLM locates the clauses; "
         "the clause text is always copied from the source document by code.",
         lifespan=lifespan,

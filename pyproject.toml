@@ -1,6 +1,6 @@
 [project]
 name = "legal-clause-extractor"
-version = "0.1.0"
+version = "1.0.0"
 description = "FastAPI service that splits legal contracts into clauses, using an LLM only to locate them."
 readme = "README.md"
 requires-python = ">=3.14"
