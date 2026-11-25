@@ -166,8 +166,7 @@ A result is written in one transaction, so it is complete or absent. No database
 2. **Read tables and side-by-side columns properly**, by detecting columns from word positions before the lines are built. Today the samples' signature blocks and a few appendix tables come out interleaved.
 3. **Re-process documents** by splitting storage into `documents` and `extraction_runs`, so a file can run again after a prompt or model change and keep its run history. Today a file has one result that is never replaced.
 4. **Process in the background**: return `202` and poll or send a webhook, with pre-signed uploads, batch uploads and cancellation.
-5. **Build a labelled evaluation set**, scored on every prompt or model change. The hand-checked samples are a start, and corrections from human review of the least certain clauses would keep it growing.
-6. **Add production basics**: authentication and tenant isolation, with duplicate detection scoped per tenant so one customer's upload never returns another's result, rate limits by token spend, a circuit breaker with provider fallback, an overall LLM deadline, JSON logs, metrics, health checks, and PostgreSQL with keyset pagination.
-7. **Make the API richer**: a nested clause hierarchy, search by clause type and metadata, RFC 9457 errors, model choice per request, and streaming the clauses as server-sent events.
-8. **Handle more input**: OCR for scans, PDF parsing in a process pool, white text in Word, and more prompt-injection hardening.
-9. **Build a review UI** that shows each clause highlighted in the original.
+5. **Add production basics**: authentication and tenant isolation, with duplicate detection scoped per tenant so one customer's upload never returns another's result, rate limits by token spend, a circuit breaker with provider fallback, an overall LLM deadline, JSON logs, metrics, health checks, and PostgreSQL with keyset pagination.
+6. **Make the API richer**: a nested clause hierarchy, search by clause type and metadata, RFC 9457 errors, model choice per request, and streaming the clauses as server-sent events.
+7. **Handle more input**: OCR for scans, PDF parsing in a process pool, white text in Word, and more prompt-injection hardening.
+8. **Build a review UI** that shows each clause highlighted in the original.
