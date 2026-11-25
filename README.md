@@ -110,22 +110,19 @@ Each string the model returns must then be found in the document. A clause numbe
 
 - **One interface, one adapter per provider API, a factory driven by settings, injected by FastAPI.** Switching to another OpenAI-compatible provider is a settings change. The tests inject a fake.
 - **DeepSeek is the default, chosen for cost.** For real client contracts the provider would be picked on its data terms (region, retention, use for training).
-- **The answer is requested in JSON mode and validated by this service**, so every provider gets the same checks. Retries and the per-attempt timeout come from the SDK.
 
 ### Parsers
 
-- **One parser per format, all with the same output**: numbered lines, each with an optional page and a noise flag. The rest of the pipeline never knows the format. Parsing runs in a worker thread.
 - **PDF: pdfplumber.** It is slower than pypdfium2, but it returns lines in visual order, which numbering the lines and finding headers and footers depend on.
 - **Page headers, footers and page numbers are flagged, not deleted.** They are left out of the prompt and the clause text, and listed in the response. The rules are conservative: a stray footer inside a clause is harmless, lost contract text is not. On the samples they flag every header, footer and page number, and nothing else.
 - **Hidden text is removed and reported**: white text on a white background in a PDF, and Word's hidden attribute. It is the obvious place to plant instructions for an LLM.
 - **Word: computed clause numbers.** Word stores a paragraph's list and level, not its number. The parser computes `1.`, `1.1` and `(a)` the way Word shows them. It uses the standard library, because python-docx has no number labels and skips content controls.
-- **A Word file is not trusted.** Its parts are capped at 50 MB unpacked, and XML that declares a document type is refused.
 
 ### Data model
 
 Two tables. **`extractions`** has one row per file: the file facts (with a unique SHA-256), the metadata, the LLM run, the warnings and the page noise. **`clauses`** has one row per clause, in document order.
 
-Two tables is enough, because a result is written once and never queried inside. In production I would split further:
+In production I would split further:
 
 | Split | When |
 |---|---|
@@ -140,21 +137,17 @@ A result is written in one transaction, so it is complete or absent. No database
 - **`POST /api/extract` takes one file and returns `201`** with the result and a `Location` header. A size middleware refuses oversized bodies while they stream in, before FastAPI buffers them. The file type is decided by content, not by name.
 - **The same file returns its stored result with `200` and no LLM call.** If two uploads of a new file race, the first write wins and both get it.
 - **`GET /api/extractions/{id}` returns exactly the upload's body.** `GET /api/extractions` returns summaries with no clause text, newest first, with `limit` and `offset` in the body.
-- **Every error has the same shape**: `{"error": {"code", "message"}}`. `413`, `415` and `422` are for the upload, `404` for an unknown id, `502` for an LLM failure or an unusable answer, `504` for a timeout.
 
 ### Logging
 
-- **One line of text per event**, from structlog, with a request id on every line and in `X-Request-ID`.
-- **Contract content is never logged**: no text, prompt, answer, file name or warning message. A test checks this with marker words. Tracebacks are logged without local variables, and database errors without parameter values.
+One line of text per event, with a request id on every line. Contract content is never logged: no text, prompt, answer, file name or warning message, and a test checks this.
 
 ## Assumptions
 
 - **PDFs have a text layer.** Scanned documents are refused, because there is no OCR.
 - **One column.** Side-by-side text, such as signature blocks and tables, is read left to right across the page, so it comes out interleaved.
 - **Contracts are in English.** The prompt, the month names in dates, and the words that mark a sentence running on (`Article`, `the`, `of`) are English.
-- **A clause is a provision that starts on its own line.** A list inside a sentence, a table row or a table-of-contents entry is not.
 - **Labels are best effort.** A borderline clause can get another label on the next run; boundaries are much more stable.
-- **The same bytes are the same document**, with one stored result that is never replaced.
 - **Metadata must be written in the contract.** Dates written only in numbers (`03/04/2021`) are not guessed, and a date such as "the next business day after…" is not computed.
 - **Word has no pages.** Length is estimated at 3,000 characters a page. Text boxes and footnotes are not read but are reported, tracked changes are read as accepted, and comments are ignored.
 - **Uploads are synchronous and one file at a time.** That is fine for a person running it, not for production.
