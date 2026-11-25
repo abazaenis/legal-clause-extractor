@@ -57,3 +57,7 @@ coverage.xml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Demo: files dropped into demo/ stay local; only the made-up sample is published ---
+demo/*
+!demo/sample-nda.pdf

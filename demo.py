@@ -1,23 +1,27 @@
-"""End-to-end demo against a running server.
+"""End-to-end demo against a running server. Needs Python 3.12+ and nothing else.
 
-    uv run python demo.py                      # the sample NDA in demo/
-    uv run python demo.py Contracts/*.pdf      # any PDF or Word files
-    uv run python demo.py --url http://localhost:8000 contract.docx
+    python demo.py                    # every PDF and Word file in the demo/ folder
+    python demo.py Contracts/*.pdf    # or the files you name
+    python demo.py --url http://localhost:8000
 
 For each file: upload it, upload it again (answered from storage), and read it back.
 Then list everything stored, and show how a wrong file type is refused.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-SAMPLE = Path(__file__).parent / "demo" / "sample-nda.pdf"
+DEMO_DIR = Path(__file__).parent / "demo"
+DOCUMENTS = {".pdf", ".docx"}
 
 if sys.platform == "win32":
     os.system("")  # switches on ANSI colours in the Windows console
@@ -40,6 +44,52 @@ TYPE_COLORS = {
 }  # fmt: skip
 
 
+# --- A small HTTP client, so the demo needs no packages ------------------------------------
+
+
+@dataclass
+class Reply:
+    code: int
+    reason: str
+    body: Any
+    seconds: float
+
+
+class Api:
+    def __init__(self, url: str) -> None:
+        self.url = url.rstrip("/")
+
+    def get(self, path: str) -> Reply:
+        return self._send(urllib.request.Request(self.url + path))
+
+    def upload(self, filename: str, data: bytes) -> Reply:
+        boundary = uuid.uuid4().hex
+        name = filename.replace('"', "%22")
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        )
+        body = head.encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        content_type = f"multipart/form-data; boundary={boundary}"
+        request = urllib.request.Request(
+            self.url + "/api/extract", data=body, headers={"Content-Type": content_type}
+        )
+        return self._send(request)
+
+    def _send(self, request: urllib.request.Request) -> Reply:
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                code, reason, raw = response.status, response.reason, response.read()
+        except urllib.error.HTTPError as error:
+            code, reason, raw = error.code, error.reason, error.read()
+        return Reply(code, reason, json.loads(raw), time.perf_counter() - started)
+
+
+# --- Output --------------------------------------------------------------------------------
+
+
 def banner(title: str) -> None:
     print("\n" + paint(f"━━ {title} " + "━" * max(0, 70 - len(title)), BOLD, CYAN))
 
@@ -48,11 +98,11 @@ def step(method: str, path: str, note: str = "") -> None:
     print(f"\n{paint('▶', BOLD, BLUE)} {paint(method, BOLD)} {path} {paint(note, DIM)}")
 
 
-def status(response: httpx.Response, seconds: float) -> str:
-    code = response.status_code
-    color = GREEN if code == 201 else CYAN if code < 300 else RED
+def status(reply: Reply) -> str:
+    color = GREEN if reply.code == 201 else CYAN if reply.code < 300 else RED
+    seconds = reply.seconds
     timing = paint(f"in {seconds:.1f} s" if seconds >= 1 else f"in {seconds * 1000:.0f} ms", DIM)
-    return f"{paint(f'{code} {response.reason_phrase}', BOLD, color)} {timing}"
+    return f"{paint(f'{reply.code} {reply.reason}', BOLD, color)} {timing}"
 
 
 def field(name: str, value: object) -> None:
@@ -107,46 +157,42 @@ def show_extraction(body: dict[str, Any]) -> None:
         print(f"\n  {paint('Left out as page noise:', DIM)} {noise}")
 
 
-def show_error(response: httpx.Response) -> None:
-    error = response.json()["error"]
+def show_error(reply: Reply) -> None:
+    error = reply.body["error"]
     print(f"  {paint(error['code'], BOLD, RED)}  {error['message']}")
 
 
-def demo_file(client: httpx.Client, path: Path) -> None:
+# --- The demo ------------------------------------------------------------------------------
+
+
+def demo_file(api: Api, path: Path) -> None:
     banner(path.name)
     data = path.read_bytes()
 
     step("POST", "/api/extract", f"({len(data) / 1024:.0f} KB, the LLM can take a minute or two)")
-    started = time.perf_counter()
-    response = client.post("/api/extract", files={"file": (path.name, data)})
-    print(f"  {status(response, time.perf_counter() - started)}")
-    if response.is_error:
-        show_error(response)
+    reply = api.upload(path.name, data)
+    print(f"  {status(reply)}")
+    if reply.code >= 400:
+        show_error(reply)
         return
-    body = response.json()
-    show_extraction(body)
+    show_extraction(reply.body)
 
     step("POST", "/api/extract", "(the same file again)")
-    started = time.perf_counter()
-    again = client.post("/api/extract", files={"file": (path.name, data)})
-    print(
-        f"  {status(again, time.perf_counter() - started)}  "
-        f"{paint('answered from storage, no LLM call', GREEN)}"
-    )
+    again = api.upload(path.name, data)
+    print(f"  {status(again)}  {paint('answered from storage, no LLM call', GREEN)}")
 
-    step("GET", f"/api/extractions/{body['document_id']}")
-    started = time.perf_counter()
-    read = client.get(f"/api/extractions/{body['document_id']}")
-    same = (
-        paint("same body as the upload", GREEN) if read.json() == body else paint("differs!", RED)
-    )
-    print(f"  {status(read, time.perf_counter() - started)}  {same}")
+    document_id = reply.body["document_id"]
+    step("GET", f"/api/extractions/{document_id}")
+    read = api.get(f"/api/extractions/{document_id}")
+    same = read.body == reply.body
+    note = paint("same body as the upload", GREEN) if same else paint("differs!", RED)
+    print(f"  {status(read)}  {note}")
 
 
-def demo_list(client: httpx.Client) -> None:
+def demo_list(api: Api) -> None:
     banner("Everything stored")
     step("GET", "/api/extractions?limit=10")
-    page = client.get("/api/extractions", params={"limit": 10}).json()
+    page = api.get("/api/extractions?limit=10").body
     print(paint(f"  {page['total']} stored, newest first", DIM))
     for item in page["items"]:
         count = item["warning_count"]
@@ -157,40 +203,49 @@ def demo_list(client: httpx.Client) -> None:
         )
 
 
-def demo_refusal(client: httpx.Client) -> None:
+def demo_refusal(api: Api) -> None:
     banner("A file that is not a contract")
     step("POST", "/api/extract", "(notes.txt, plain text)")
-    started = time.perf_counter()
-    response = client.post("/api/extract", files={"file": ("notes.txt", b"Just some notes.")})
-    print(f"  {status(response, time.perf_counter() - started)}")
-    show_error(response)
+    reply = api.upload("notes.txt", b"Just some notes.")
+    print(f"  {status(reply)}")
+    show_error(reply)
+
+
+def files_to_upload(patterns: list[str]) -> list[Path]:
+    """The files named, with wildcards expanded here because PowerShell does not expand
+    them. Without any, every PDF and Word file in the demo/ folder."""
+    if not patterns:
+        return sorted(p for p in DEMO_DIR.iterdir() if p.suffix.lower() in DOCUMENTS)
+    return [
+        path
+        for pattern in patterns
+        for path in (
+            sorted(Path().glob(pattern)) if any(c in pattern for c in "*?[") else [Path(pattern)]
+        )
+    ]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("files", nargs="*", help="PDF or Word files (default: the sample NDA)")
+    parser.add_argument("files", nargs="*", help="PDF or Word files (default: those in demo/)")
     parser.add_argument("--url", default="http://localhost:8000", help="where the server runs")
     args = parser.parse_args()
-    # PowerShell passes "Contracts/*.pdf" through as it is, so wildcards are expanded here.
-    files = [
-        path
-        for pattern in args.files
-        for path in (
-            sorted(Path().glob(pattern)) if any(c in pattern for c in "*?[") else [Path(pattern)]
-        )
-    ]
 
-    with httpx.Client(base_url=args.url, timeout=900) as client:
-        try:
-            client.get("/api/extractions", params={"limit": 1}).raise_for_status()
-        except httpx.HTTPError:
-            sys.exit(paint(f"No server at {args.url}. Start it first (see the README).", BOLD, RED))
-        for path in files or [SAMPLE]:
-            demo_file(client, path)
-        demo_list(client)
-        demo_refusal(client)
+    api = Api(args.url)
+    try:
+        api.get("/api/extractions?limit=1")
+    except urllib.error.URLError, OSError:
+        sys.exit(paint(f"No server at {args.url}. Start it first (see the README).", BOLD, RED))
+
+    files = files_to_upload(args.files)
+    if not files:
+        sys.exit(paint("No PDF or Word files to upload. Put some in demo/.", BOLD, RED))
+    for path in files:
+        demo_file(api, path)
+    demo_list(api)
+    demo_refusal(api)
     print()
 
 
