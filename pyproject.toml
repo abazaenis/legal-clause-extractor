@@ -7,12 +7,16 @@ requires-python = ">=3.14"
 dependencies = [
     "aiosqlite>=0.22",
     "alembic>=1.20",
+    "fastapi>=0.165.0",
     "pydantic-settings>=2.16",
+    "python-multipart>=0.0.34",
     "sqlalchemy[asyncio]>=2.1",
+    "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mypy>=2.4",
     "pytest>=9.2",
     "pytest-asyncio>=1.5",
@@ -36,4 +40,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
+plugins = ["pydantic.mypy"]
 files = ["app", "tests", "migrations"]
+# The test folders are not packages; this lets mypy tell their conftest.py files apart.
+explicit_package_bases = true
