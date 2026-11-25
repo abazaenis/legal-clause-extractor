@@ -198,6 +198,22 @@ async def test_clause_must_belong_to_an_existing_extraction(session: AsyncSessio
         await session.commit()
 
 
+async def test_values_of_a_failed_statement_stay_out_of_the_error(session: AsyncSession) -> None:
+    """An error that nobody handled is logged with its message, and the values of an
+    insert include the text of every clause."""
+    clause = make_clause(0, text="CONFIDENTIAL CLAUSE TEXT", start_line=5, end_line=4)
+    session.add(make_extraction(filename="confidential-nda.pdf", clauses=[clause]))
+
+    with pytest.raises(IntegrityError) as raised:
+        await session.commit()
+
+    message = str(raised.value)
+    # The statement is there to debug with. What was being stored is not.
+    assert "INSERT INTO clauses" in message
+    assert "CONFIDENTIAL" not in message
+    assert "confidential-nda" not in message
+
+
 @pytest.mark.parametrize(
     "invalid",
     [

@@ -12,8 +12,13 @@ from sqlalchemy.pool import ConnectionPoolEntry
 
 
 def create_engine(database_url: str) -> AsyncEngine:
-    """Create the async engine, applying SQLite settings when the URL points at SQLite."""
-    engine = create_async_engine(database_url)
+    """Create the async engine, applying SQLite settings when the URL points at SQLite.
+
+    `hide_parameters` keeps the values of a statement out of error messages and logs.
+    The values include the text of every clause, and an error that nobody handled is
+    logged with its message.
+    """
+    engine = create_async_engine(database_url, hide_parameters=True)
     if engine.dialect.name == "sqlite":
         event.listen(engine.sync_engine, "connect", _configure_sqlite)
     return engine

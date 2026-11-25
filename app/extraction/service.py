@@ -1,6 +1,10 @@
 """The extraction pipeline, from a validated file to a stored result."""
 
 import asyncio
+import time
+from collections import Counter
+
+import structlog
 
 from app.db.repository import ExtractionRepository, StoredExtraction
 from app.errors import LLMInvalidResponseError
@@ -12,6 +16,10 @@ from app.extraction.prompt import PROMPT_VERSION, build_user_prompt, system_prom
 from app.extraction.repair import repair_answer
 from app.extraction.verification import verify_clauses, verify_facts
 from app.llm.base import LLMProvider
+
+# What is logged here is counts, sizes, durations, ids and codes. Never the text of a
+# contract, and never a file name or the message of a warning, which carry such text.
+log = structlog.get_logger(__name__)
 
 
 async def extract_and_store(
@@ -32,10 +40,13 @@ async def extract_and_store(
     if not overwrite:
         stored = await extractions.find_by_sha256(source.sha256)
         if stored is not None:
+            log.info("extraction_served_from_storage", document_id=str(stored.id))
             return StoredExtraction(extraction=stored, created=False)
 
     result = await extract_document(source, parsers, llm)
-    return await extractions.save(source, result)
+    saved = await extractions.save(source, result)
+    log.info("extraction_stored", document_id=str(saved.extraction.id), created=saved.created)
+    return saved
 
 
 async def extract_document(
@@ -53,8 +64,18 @@ async def extract_document(
     file always gives the same result.
     """
     parser = parsers.for_file_type(source.file_type)
+    started = time.perf_counter()
     # Parsing is CPU-bound. A worker thread keeps the event loop free for other requests.
     document = await asyncio.to_thread(parser.parse, source)
+    log.info(
+        "document_parsed",
+        file_type=source.file_type.value,
+        size_bytes=source.size_bytes,
+        pages=document.page_count,
+        lines=len(document.lines),
+        noise_lines=len(document.lines) - len(document.content_lines),
+        duration_ms=round((time.perf_counter() - started) * 1000),
+    )
 
     response = await llm.complete(system=system_prompt(), user=build_user_prompt(document))
     try:
@@ -65,17 +86,20 @@ async def extract_document(
 
     clauses, clause_warnings = verify_clauses(cut_clauses(repaired.starts, document))
     metadata, metadata_warnings = verify_facts(repaired.facts, document)
+    warnings = (*document.warnings, *repaired.warnings, *clause_warnings, *metadata_warnings)
+    log.info(
+        "extraction_finished",
+        clauses=len(clauses),
+        # Which warnings, and how many of each. Their messages quote the document.
+        warnings=dict(Counter(warning.code for warning in warnings)),
+        prompt_version=PROMPT_VERSION,
+    )
 
     return ExtractionResult(
         page_count=document.page_count,
         metadata=metadata,
         clauses=clauses,
-        warnings=(
-            *document.warnings,
-            *repaired.warnings,
-            *clause_warnings,
-            *metadata_warnings,
-        ),
+        warnings=warnings,
         page_noise=summarise_page_noise(document),
         llm=LLMUsage(
             provider=response.provider,

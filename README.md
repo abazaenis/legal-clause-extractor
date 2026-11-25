@@ -167,7 +167,7 @@ At `high` nearly all of the output is reasoning, and that is where the time goes
 - **The default is DeepSeek**, called through its OpenAI-compatible API with the official `openai` SDK. Any other OpenAI-compatible provider is a change of environment variables; a provider with a different API is one new class behind the same interface.
 - **The answer is requested in JSON mode and validated by this service.** I do not rely on a provider-specific strict-schema feature, so the same checks and repairs apply to every provider. An answer that is empty or is not valid JSON fails the request with `502`. The model is not asked again.
 - **Retries, backoff and the timeout of one attempt come from the SDK**, configured once.
-- **Prompts and answers are never logged.** They contain contract text. What is logged for each call is the provider, the model, the token counts, the duration and, on failure, the kind of error and its status.
+- **Prompts and answers are never logged.** They contain contract text. What is logged for each call is the provider, the model, the token counts, the duration and, on failure, the kind of error and its status. The "Logging" section below has the rules for the whole service.
 - **DeepSeek is a development default, chosen for cost.** For real client contracts the provider has to be chosen on its data terms (region, retention, use for training), which is the reason it is configuration.
 
 The settings, all read from the environment or a `.env` file:
@@ -270,6 +270,32 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 - **The list is ordered newest first**, by the time the stored result was produced. The id breaks a tie, so the order is the same on every request and no extraction is on two pages. An overwrite makes a result the newest again.
 - **One small error shape for every failure**: `{"error": {"code": "...", "message": "..."}}`. The status code says where the problem is: `413`, `415` and `422` for the upload, `422` for an id that is not a UUID or a page parameter out of range, `404` for an unknown id, `502` and `504` for the LLM.
 
+### Logging
+
+- **One line of text per event**, on standard output: the time in UTC, the level, the event, the logger, and the fields of the event as `key=value`. Lines from libraries such as uvicorn, SQLAlchemy and the HTTP client go through the same formatter, so the whole log reads the same way. In a terminal the levels are coloured; into a file or a pipe the text is plain.
+- **Text, not JSON.** This service is run by a person at a terminal, and text is what a person reads. The events are still an event name with named fields, logged through structlog, so writing JSON for a log collector is a change of one formatting step. It is on the list of later work.
+- **Every request has an id.** It is on every line logged for that request, whichever part of the service wrote the line, and it comes back in the `X-Request-ID` header, also on a `500`. A caller can send an id of its own in that header to follow one request through several services. It is used only if it is letters, digits, `.`, `_` or `-`, 64 characters at most, so a caller cannot write arbitrary text into the logs.
+- **Contract content is never logged.** Not the text of a contract, not the prompt and not the model's answer. Also not a file name, because file names tend to name the parties, and not the message of a warning, because it quotes the document. A line carries counts, sizes, durations, ids and codes. A test uploads a contract full of marker words, with a file name and a model answer that carry them too, and checks that no log line contains one.
+- **Three places would leak without anyone writing a log call**, and each is closed:
+  - A traceback is logged without the values of local variables. A local variable can hold the text of a contract.
+  - A database error is logged without the values of the statement. They include the text of every clause.
+  - The HTTP libraries are never logged below `INFO`, whatever `LOG_LEVEL` says. Their debug output describes requests in detail, and the requests carry contracts.
+
+One upload of a sample NDA, as the server logged it:
+
+```text
+2026-11-25 19:00:51 [info     ] document_parsed                [app.extraction.service] duration_ms=160 file_type=pdf lines=83 noise_lines=2 pages=3 request_id=demo-upload-1 size_bytes=285372
+2026-11-25 19:00:51 [info     ] HTTP Request: POST https://api.deepseek.com/chat/completions "HTTP/1.1 200 OK" [httpx2] request_id=demo-upload-1
+2026-11-25 19:00:52 [info     ] llm_call_finished              [app.llm.adapters.openai_compatible] duration_ms=1685 finish_reason=stop input_tokens=3326 model=deepseek-flash output_tokens=312 provider=deepseek request_id=demo-upload-1
+2026-11-25 19:00:52 [info     ] extraction_finished            [app.extraction.service] clauses=11 prompt_version=v3 request_id=demo-upload-1 warnings={'hidden_text_removed': 1}
+2026-11-25 19:00:52 [info     ] extraction_stored              [app.extraction.service] created=True document_id=01a21415-0956-77ff-8bf7-4a6b5472df05 request_id=demo-upload-1
+2026-11-25 19:00:52 [info     ] request_finished               [app.api.middleware] duration_ms=1890 method=POST path=/api/extract request_id=demo-upload-1 status_code=201
+```
+
+The same file again is one line, `extraction_served_from_storage`, and no LLM call. A refused request logs `request_refused` with its error code, and an error nobody handled logs `unhandled_error` with the traceback.
+
+`LOG_LEVEL` sets the least severe level that is logged: `DEBUG`, `INFO` (the default), `WARNING` or `ERROR`.
+
 ## What I'd do with more time
 
 The submission is deliberately scoped to the core flow. These are the things I left out on purpose, with the reason each one matters. The first two are what I would do next; the rest are grouped by theme.
@@ -323,6 +349,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **Authentication and tenant isolation.** Contracts are confidential. Every extraction would belong to a tenant and every query would be scoped to it.
 - **Rate limiting and per-tenant quotas**, aware of token spend and not only of request counts.
 - **Circuit breaker and provider fallback** around the LLM call, so an upstream outage fails fast.
+- **JSON logs.** The logs are text for a person to read. A log collector wants one JSON object per line, so that the fields can be searched and counted. The events already have named fields, so this is a change of the last formatting step.
 - **Metrics, tracing and alerting.** Latency and token usage per stage, validation-failure rate and cost per document, with alerts on error rate and spend.
 - **PostgreSQL and keyset pagination** in place of SQLite and offset pagination. With an offset, a new extraction that arrives between two requests shifts every later page by one, and a deep page costs as much as all the pages before it.
 - **Parse PDFs in a process pool.** pdfplumber is pure Python, so a long parse slows other requests while it runs. A process pool would isolate it.

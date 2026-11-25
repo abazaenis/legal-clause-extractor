@@ -1,9 +1,9 @@
 """Adapter for every API that speaks the OpenAI chat-completions protocol."""
 
-import logging
 import time
 
 import openai
+import structlog
 from openai import AsyncOpenAI
 
 from app.errors import (
@@ -14,7 +14,7 @@ from app.errors import (
 )
 from app.llm.base import LLMResponse
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 
 class OpenAICompatibleProvider:
@@ -91,15 +91,14 @@ class OpenAICompatibleProvider:
         usage = completion.usage
         input_tokens = usage.prompt_tokens if usage else 0
         output_tokens = usage.completion_tokens if usage else 0
-        logger.info(
-            "LLM call finished: provider=%s model=%s input_tokens=%d output_tokens=%d "
-            "duration_ms=%d finish_reason=%s",
-            self._name,
-            completion.model,
-            input_tokens,
-            output_tokens,
-            duration_ms,
-            choice.finish_reason if choice else None,
+        log.info(
+            "llm_call_finished",
+            provider=self._name,
+            model=completion.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_ms=duration_ms,
+            finish_reason=choice.finish_reason if choice else None,
         )
 
         if choice is not None and choice.finish_reason == "length":
@@ -123,10 +122,10 @@ class OpenAICompatibleProvider:
 
     def _log_failure(self, what: str, error: openai.OpenAIError) -> None:
         # Only the kind of error and its status. The provider's message can quote the request.
-        logger.warning(
-            "LLM provider %s %s: error=%s status=%s",
-            self._name,
-            what,
-            type(error).__name__,
-            getattr(error, "status_code", None),
+        log.warning(
+            "llm_call_failed",
+            provider=self._name,
+            outcome=what,
+            error=type(error).__name__,
+            status=getattr(error, "status_code", None),
         )

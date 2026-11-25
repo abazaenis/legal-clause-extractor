@@ -1,9 +1,14 @@
 """Application settings, read from environment variables and an optional .env file."""
 
 from functools import lru_cache
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import BeforeValidator, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LogLevel = Annotated[
+    Literal["DEBUG", "INFO", "WARNING", "ERROR"], BeforeValidator(lambda value: str(value).upper())
+]
 
 
 class Settings(BaseSettings):
@@ -40,6 +45,9 @@ class Settings(BaseSettings):
     # For one attempt, in seconds. The SDK retries on top of this.
     llm_timeout_seconds: float = Field(default=300, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)
+
+    # The least severe level that is logged.
+    log_level: LogLevel = "INFO"
 
 
 @lru_cache
