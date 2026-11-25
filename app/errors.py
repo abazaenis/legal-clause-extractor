@@ -59,11 +59,45 @@ class NoTextFoundError(AppError):
     code = "no_text_found"
 
 
+class LLMTimeoutError(AppError):
+    status_code = 504
+    code = "llm_timeout"
+
+
+class LLMUnavailableError(AppError):
+    """The provider could not be reached, was overloaded, or failed on its side."""
+
+    status_code = 502
+    code = "llm_unavailable"
+
+
+class LLMRequestRejectedError(AppError):
+    """The provider refused the request: a wrong key, no balance, an unknown model."""
+
+    status_code = 502
+    code = "llm_request_rejected"
+
+
+class LLMInvalidResponseError(AppError):
+    """The provider answered, but the answer cannot be used."""
+
+    status_code = 502
+    code = "llm_invalid_response"
+
+
 class NotImplementedYetError(AppError):
     """A step of the pipeline that has not been built yet."""
 
     status_code = 501
     code = "not_implemented"
+
+
+class ConfigurationError(Exception):
+    """The application is configured wrongly and cannot start.
+
+    Not an `AppError`: nobody is waiting for a response. It stops the server at
+    startup, with a message that says which setting to fix.
+    """
 
 
 def _readable_size(size_bytes: int) -> str:

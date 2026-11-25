@@ -44,12 +44,26 @@ What this guarantees is narrow and checkable: the model cannot alter contract te
 ### LLM provider and model
 
 - **The provider is configuration, not code.** The LLM sits behind one small interface. The provider name, base URL, API key, model and reasoning effort come from environment variables.
-- **Four small pieces make that work.** The pipeline depends on one interface (Strategy). Each provider is an adapter that translates the interface to a vendor SDK and maps its errors to ours (Adapter). A factory builds the adapter named in the environment and fails at startup on an unknown name (Factory). FastAPI injects it into the extraction service, which is also how the tests swap in a fake (dependency injection).
+- **Four small pieces make that work.** The pipeline depends on one interface (Strategy). Each provider is an adapter that translates the interface to a vendor SDK and maps its errors to ours (Adapter). A factory builds the adapter named in the environment, and stops the server at startup on an unknown name or a missing API key (Factory). FastAPI injects it into the extraction service, which is also how the tests swap in a fake (dependency injection).
 - **Adapters know nothing about contracts.** They send text and return text plus token usage. The prompt, the parsing of the answer and every check live in the extraction code, so adding a provider is one small class and one line in the factory.
 - **The default is DeepSeek**, called through its OpenAI-compatible API with the official `openai` SDK. Any other OpenAI-compatible provider is a change of environment variables; a provider with a different API is one new class behind the same interface.
 - **The answer is requested in JSON mode and validated by this service.** I do not rely on a provider-specific strict-schema feature, so the same checks apply to every provider. An empty or invalid answer is treated like any other structural error: one re-ask, then `502`.
 - **Retries, backoff and timeouts come from the SDK**, configured once, with one overall deadline per request.
+- **Prompts and answers are never logged.** They contain contract text. What is logged for each call is the provider, the model, the token counts, the duration and, on failure, the kind of error and its status.
 - **DeepSeek is a development default, chosen for cost.** For real client contracts the provider has to be chosen on its data terms (region, retention, use for training), which is the reason it is configuration.
+
+The settings, all read from the environment or a `.env` file:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_PROVIDER` | `deepseek` | `deepseek`, or `openai_compatible` for any other API with the OpenAI wire format |
+| `LLM_API_KEY` | none | Required. The server does not start without it |
+| `LLM_MODEL` | `deepseek-flash` | The model to ask |
+| `LLM_BASE_URL` | the provider's own | Required for `openai_compatible` |
+| `LLM_REASONING_EFFORT` | the provider's default | Passed to the provider as it is |
+| `LLM_MAX_OUTPUT_TOKENS` | `32000` | An answer that hits the limit is treated as invalid |
+| `LLM_TIMEOUT_SECONDS` | `300` | For one attempt |
+| `LLM_MAX_RETRIES` | `2` | Retries after the first attempt, with backoff |
 
 ### Document parsers
 
@@ -175,6 +189,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **Search and filtering.** Each clause carries a type such as confidentiality, termination or governing law. Filtering a document's clauses by type, and searching across documents by clause type or contract metadata, builds directly on that.
 - **RFC 9457 problem details.** Errors use a small custom shape (`code` and `message`). I would switch to the standard `application/problem+json` format, so clients and gateways can handle errors without knowing this API.
 - **Model and reasoning effort per request.** The provider, model and reasoning effort are set in the environment. I would list the configured models through the API and let a request pick one, together with a reasoning effort, to trade cost and speed against accuracy per document.
+- **Streaming results with Server-Sent Events.** The LLM call is the slow part, and the client waits for the whole response. The LLM's answer can be streamed to the backend, and because it lists the clause starts in document order, a clause is complete as soon as the next start arrives. The backend could push each clause to the client as a server-sent event, so the user watches the contract fill in. The events would be provisional until the whole answer has passed validation, and the stored result would stay the source of truth.
 
 ### Running it in production
 
