@@ -64,6 +64,43 @@ One run of all seven samples: `deepseek-flash`, reasoning effort `high`, prompt 
 - **Every sample was also checked by hand.** Of 520 clear-cut clause starts, the API found all 520. Its 14 extra parts were judgement calls, such as unnumbered headings and template placeholders. Every clause number and every clause text matched the document exactly.
 - **Reasoning effort trades time for recall.** At `none`, the service agreement took 6 s instead of 150 s, but it gave 53 parts instead of 59 and missed Exhibit A. `.env.example` uses `none`, so the demo runs in seconds; set `high` for the thorough run.
 
+## How I used AI
+
+I used two models in two roles. Claude Code wrote the code, in one long chat. A second model reviewed with me: I used it as a rubber duck to talk a design through, question a change, or read a diff before I accepted it. The decisions stayed with me. The full Claude Code chat is exported and can be shared.
+
+**How I worked.** Scope and design came first, in conversation, before any code. I set the core rule myself: everything that can be deterministic is code, and the LLM only points at line numbers. After that, each piece got its own branch and pull request. I named the next piece, read the result, and accepted it or sent it back with a precise rule and a test case.
+
+**Where I overruled it:**
+
+| The AI proposed | I decided |
+|---|---|
+| `deepseek-v4-pro` as the default model | `deepseek-flash`: DeepSeek's own documentation rates it better and cheaper |
+| Python 3.13 | Python 3.14 |
+| Asking the LLM again when its answer is flawed | Repair in code with a warning per fix; fail only when more than 10% needed fixing |
+| Clauses with a level and a parent | One flat list; the clause number shows the hierarchy |
+| A plain OpenAI client | Adapter, Strategy, Factory and dependency injection, later reused for the parsers |
+| Idempotency keys and health checks in the first version | README only |
+| Chunking long contracts in the base design | One call; chunking is first on the list below |
+| JSON logs | Text logs; JSON is for production, and this has none |
+| `cleaning.py` and a module named `logging.py` | `noise.py`, because nothing is deleted, and no module that shadows the standard library |
+| Committing to the current branch | A branch and a pull request for every piece |
+
+**How I checked the output:**
+
+- **Measured before deciding.** I asked for a pdfplumber versus pypdfium2 benchmark on the 176-page sample, with the code, and chose pdfplumber for line order, not speed. Before the Word parser, I had both sample files inspected and the libraries checked against what is in them: python-docx skips the content controls that hold most of the master agreement, and docx2python ignores numbers that come from styles.
+- **Read the real output, not just the tests.** I read the parsed lines of every sample, the model's raw answers at several reasoning efforts, and the clauses that came back. At the end I checked all seven samples by hand (see the results above).
+- **Turned every bug into a test on the real line.** NYISO line 535, NYISO line 654 and ACUTRAQ line 362 are tests now.
+
+**Mistakes I caught:**
+
+- **Hidden text reached the prompt.** One NDA carries "Updated 2016" in white on white. Harmless here, but it is how a prompt injection gets in. It is now removed and reported.
+- **A clause number in a larger font was split from its title** onto a line of its own. Fixed with a 5-point line tolerance.
+- **A wrapped cross-reference was taken for a clause.** "…as set forth in Article" / "2.3.1.2.3. During…" (NYISO line 535). Now dropped, with a warning.
+- **A start pointed at the paragraph under an exhibit heading**, not at the heading (ACUTRAQ line 362). Fixed in code and in prompt v3.
+- **The AI's fix for that was too loose.** It would have moved clause 4.2 up to "Appendix C of this Agreement…" (NYISO line 654), which is the end of a sentence. I tightened the rule.
+- **Side-by-side columns are interleaved.** No sample clause is affected, so it is the second item on the list below.
+- **An error message said "20971520 bytes".** It now says "20 MB".
+
 ## Design decisions
 
 ![Components](docs/diagrams/components.svg)
