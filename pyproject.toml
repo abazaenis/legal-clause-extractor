@@ -51,6 +51,6 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["app", "tests", "migrations"]
+files = ["app", "tests", "migrations", "demo.py"]
 # The test folders are not packages; this lets mypy tell their conftest.py files apart.
 explicit_package_bases = true

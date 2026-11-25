@@ -31,6 +31,15 @@ uv run uvicorn app.main:app --reload
 
 Either way, the API is at `http://localhost:8000` and its interactive docs are at `/docs`.
 
+**Demo** (with the server running):
+
+```bash
+uv run python demo.py                  # a small made-up NDA in demo/
+uv run python demo.py Contracts/*.pdf  # or your own PDF and Word files
+```
+
+It uploads each file, uploads it again (answered from storage), reads it back, lists what is stored, and shows a refused upload. The sample NDA has a running header and footer and a hidden line of white text, so page noise and hidden-text removal show up too.
+
 **Tests and checks:**
 
 ```bash
