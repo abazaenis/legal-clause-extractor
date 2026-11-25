@@ -41,6 +41,11 @@ target-version = "py314"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# The tests quote contract text as a PDF writes it, curly apostrophes and long dashes
+# included. RUF001 would flag each of them as a likely typo.
+"tests/**" = ["RUF001"]
+
 [tool.mypy]
 python_version = "3.14"
 strict = true

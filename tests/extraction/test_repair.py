@@ -333,30 +333,174 @@ def test_page_noise_between_the_title_and_the_start_is_skipped() -> None:
     assert lines == [1, 2]
 
 
+# A heading that does not begin like the heading of an attachment, so that only the
+# rule about titles is at work in the cases below.
+PLAIN_HEADING = document(
+    "Opening words.",
+    "Access Security Requirements",
+    "We must work together to protect the privacy of consumers.",
+    "The following measures are designed to reduce unauthorized access.",
+)
+
+
 @pytest.mark.parametrize(
     "starts",
     [
         pytest.param(
-            (start(1), start(2, title="Exhibit A: Access Security Requirements")),
+            (start(1), start(2, title="Access Security Requirements")),
             id="the title is on the start line already",
         ),
         pytest.param(
-            (start(1), start(2), start(3, title="Exhibit A: Access Security Requirements")),
+            (start(1), start(2), start(3, title="Access Security Requirements")),
             id="the line above is a start itself",
         ),
         pytest.param((start(1), start(3, title="Security Measures")), id="the title is nowhere"),
         pytest.param(
-            (start(1), start(3, title="EXHIBIT A: ACCESS SECURITY REQUIREMENTS")),
+            (start(1), start(3, title="ACCESS SECURITY REQUIREMENTS")),
             id="the line above writes the title differently",
         ),
         pytest.param((start(1), start(3)), id="there is no title"),
     ],
 )
 def test_start_stays_where_it_is(starts: tuple[RawClauseStart, ...]) -> None:
-    lines, warnings, _ = repair(answer(*starts), EXHIBIT_HEADING)
+    lines, warnings, _ = repair(answer(*starts), PLAIN_HEADING)
 
     assert lines == [clause.line for clause in starts]
     assert warnings == []
+
+
+# --- Fix 4: the heading of an attachment on the line above ------------------------------------
+
+
+def test_start_under_the_heading_of_an_attachment_is_moved_up_to_it() -> None:
+    # No title this time, so the rule about titles has nothing to go by.
+    lines, warnings, repaired = repair(answer(start(1), start(3, "exhibit")), EXHIBIT_HEADING)
+
+    assert lines == [1, 2]
+    assert repaired.starts[1].type is ClauseType.EXHIBIT
+    assert warnings == [
+        (
+            "clause_start_moved_to_heading",
+            "The clause start on line 3 was moved up to line 2, which is the heading "
+            '"Exhibit A: Access Security Requirements".',
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["Exhibit A: Access Security Requirements", "APPENDIX B", "Schedule 1: Fees", "annex II"],
+)
+def test_each_kind_of_attachment_heading_is_recognised(heading: str) -> None:
+    doc = document("Opening words.", heading, "The first paragraph below it.")
+
+    lines, warnings, _ = repair(answer(start(1), start(3)), doc)
+
+    assert lines == [1, 2]
+    assert [code for code, _ in warnings] == ["clause_start_moved_to_heading"]
+
+
+@pytest.mark.parametrize(
+    "line_above",
+    [
+        pytest.param("Table of Exhibits", id="the word comes later in the line"),
+        pytest.param("Scheduled maintenance is announced in advance.", id="a longer word"),
+        pytest.param("Exhibits are attached to this Agreement.", id="the plural"),
+        pytest.param("Access Security Requirements", id="another kind of heading"),
+        pytest.param("Appendix C of this Agreement in accordance with its terms.", id="a sentence"),
+        pytest.param("Schedule 1 - Fees", id="no colon after the identifier"),
+        pytest.param("EXHIBIT", id="no identifier"),
+    ],
+)
+def test_line_above_that_is_not_an_attachment_heading_moves_nothing(line_above: str) -> None:
+    doc = document("Opening words.", line_above, "The first paragraph below it.")
+
+    lines, warnings, _ = repair(answer(start(1), start(3)), doc)
+
+    assert lines == [1, 3]
+    assert warnings == []
+
+
+def test_reference_that_wraps_onto_a_new_line_is_not_a_heading() -> None:
+    # The shape of lines 653 to 655 of the long sample agreement. The second line
+    # begins like a heading, but it carries on the sentence of the first.
+    doc = document(
+        "4.1 The systems shall interconnect at the Points of Interconnection set forth in",
+        "Appendix C of this Agreement in accordance with the terms of this Agreement.",
+        "4.2 No Transmission Delivery Service.",
+    )
+
+    lines, warnings, _ = repair(answer(start(1, number="4.1"), start(3, number="4.2")), doc)
+
+    assert lines == [1, 3]
+    assert warnings == []
+
+
+def test_heading_must_follow_a_line_that_ends_a_sentence() -> None:
+    # "Appendix B." has the form of a heading. The line before it shows that it is the
+    # end of a sentence.
+    doc = document(
+        "4.1 The work shall follow the milestones set forth in",
+        "Appendix B.",
+        "4.2 Each party shall bear its own costs.",
+    )
+
+    lines, warnings, _ = repair(answer(start(1, number="4.1"), start(3, number="4.2")), doc)
+
+    assert lines == [1, 3]
+    assert warnings == []
+
+
+def test_heading_on_the_first_line_of_the_document_has_no_line_before_it() -> None:
+    doc = document("EXHIBIT A", "The first paragraph.", "The second paragraph.")
+
+    lines, warnings, _ = repair(answer(start(2)), doc)
+
+    assert lines == [1]
+    assert [code for code, _ in warnings] == ["clause_start_moved_to_heading"]
+
+
+def test_start_that_is_on_an_attachment_heading_itself_stays_there() -> None:
+    # The line above the heading is the last row of a list of exhibits, not its heading.
+    doc = document(
+        "Table of Exhibits",
+        "Exhibit A: Access Security Requirements",
+        "Exhibit B: Notice to Users",
+        "Exhibit A: Access Security Requirements",
+        "We must work together to protect the privacy of consumers.",
+    )
+
+    lines, warnings, _ = repair(answer(start(1, "table_of_contents"), start(4, "exhibit")), doc)
+
+    assert lines == [1, 4]
+    assert warnings == []
+
+
+def test_attachment_heading_that_is_a_start_already_is_left_alone() -> None:
+    lines, warnings, _ = repair(answer(start(1), start(2, "exhibit"), start(3)), EXHIBIT_HEADING)
+
+    assert lines == [1, 2, 3]
+    assert warnings == []
+
+
+def test_start_with_a_title_is_moved_once_and_reported_once() -> None:
+    # Both rules apply here. The rule about titles comes first, and after it the start
+    # is on the heading itself.
+    lines, warnings, _ = repair(
+        answer(start(1), start(3, "exhibit", title="Access Security Requirements")),
+        EXHIBIT_HEADING,
+    )
+
+    assert lines == [1, 2]
+    assert [code for code, _ in warnings] == ["clause_start_moved_to_title"]
+
+
+def test_page_noise_between_the_heading_and_the_start_is_skipped() -> None:
+    doc = document("Opening.", "APPENDIX A", "Page 11", "The first paragraph.", noise=(3,))
+
+    lines, _, _ = repair(answer(start(1), start(4)), doc)
+
+    assert lines == [1, 2]
 
 
 # --- When the answer is refused ------------------------------------------------------------

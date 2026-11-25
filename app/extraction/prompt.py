@@ -8,7 +8,7 @@ from app.extraction.models import ParsedDocument
 # Stored with every extraction. Change it whenever the prompt changes, by adding a new
 # file: results produced by different prompts must stay distinguishable. Earlier
 # versions stay in the prompts folder, so the history of the prompt can be read.
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 _PROMPT_FILE = Path(__file__).parent / "prompts" / f"extract_{PROMPT_VERSION}.md"
 

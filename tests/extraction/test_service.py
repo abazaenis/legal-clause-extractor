@@ -1,34 +1,40 @@
-"""The pipeline: parse the file, ask the LLM where the clauses start, repair its answer."""
+"""The pipeline: parse the file, ask the LLM, repair its answer, cut and check the clauses."""
 
 import threading
+from datetime import date
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.db.repository import ExtractionRepository
+from app.db.session import create_session_factory
 from app.errors import LLMInvalidResponseError, LLMUnavailableError
 from app.extraction.file_types import FileType
 from app.extraction.labels import ClauseType, ContractType
 from app.extraction.models import (
-    ClauseStart,
-    ContractFacts,
+    ContractMetadata,
+    ExtractedClause,
     ExtractionWarning,
     Line,
     LLMUsage,
+    PageNoise,
     ParsedDocument,
     Party,
     SourceFile,
 )
 from app.extraction.parsers.factory import ParserFactory
 from app.extraction.prompt import PROMPT_VERSION, system_prompt
-from app.extraction.service import extract_document
+from app.extraction.service import extract_and_store, extract_document
 from tests.fakes import FakeLLMProvider
 
 SOURCE = SourceFile(filename="contract.pdf", file_type=FileType.PDF, data=b"%PDF-", sha256="x")
 DOCUMENT = ParsedDocument(
     lines=(
-        Line(number=1, text="Header", page=1, is_noise=True),
+        Line(number=1, text="Page 1 of 1", page=1, is_noise=True),
         Line(number=2, text="SERVICES AGREEMENT", page=1),
-        Line(number=3, text="1. Term", page=1),
-        Line(number=4, text="This Agreement runs for one year.", page=1),
+        Line(number=3, text="between Acme Ltd (the “Supplier”) and the Customer.", page=1),
+        Line(number=4, text="1. Term", page=1),
+        Line(number=5, text="This Agreement starts on March 1, 2021.", page=1),
     ),
     page_count=1,
 )
@@ -41,7 +47,7 @@ ANSWER = {
     },
     "clauses": [
         {"line": 2, "type": "preamble", "number": None, "title": None},
-        {"line": 3, "type": "term_and_termination", "number": "1", "title": "Term"},
+        {"line": 4, "type": "term_and_termination", "number": "1", "title": "Term"},
     ],
 }
 
@@ -60,8 +66,11 @@ class RecordingParser:
         return self.document
 
 
-def parsers(parser: RecordingParser) -> ParserFactory:
-    return ParserFactory({FileType.PDF: parser})
+def parsers(parser: RecordingParser | None = None) -> ParserFactory:
+    return ParserFactory({FileType.PDF: parser or RecordingParser()})
+
+
+# --- The pipeline, without storage --------------------------------------------------------------
 
 
 async def test_file_is_parsed_and_sent_to_the_llm_as_numbered_lines() -> None:
@@ -78,29 +87,52 @@ async def test_file_is_parsed_and_sent_to_the_llm_as_numbered_lines() -> None:
                 "<document>\n"
                 "[page 1]\n"
                 "2| SERVICES AGREEMENT\n"
-                "3| 1. Term\n"
-                "4| This Agreement runs for one year.\n"
+                "3| between Acme Ltd (the “Supplier”) and the Customer.\n"
+                "4| 1. Term\n"
+                "5| This Agreement starts on March 1, 2021.\n"
                 "</document>"
             ),
         }
     ]
 
 
-async def test_result_says_where_the_parts_start_and_what_the_call_cost() -> None:
-    draft = await extract_document(SOURCE, parsers(RecordingParser()), FakeLLMProvider(ANSWER))
+async def test_result_holds_the_clauses_with_their_text_and_the_checked_metadata() -> None:
+    result = await extract_document(SOURCE, parsers(), FakeLLMProvider(ANSWER))
 
-    assert draft.starts == (
-        ClauseStart(line=2, type=ClauseType.PREAMBLE),
-        ClauseStart(line=3, type=ClauseType.TERM_AND_TERMINATION, number="1", title="Term"),
+    assert result.clauses == (
+        ExtractedClause(
+            position=0,
+            type=ClauseType.PREAMBLE,
+            number=None,
+            title=None,
+            text="SERVICES AGREEMENT\nbetween Acme Ltd (the “Supplier”) and the Customer.",
+            start_line=2,
+            end_line=3,
+            start_page=1,
+            end_page=1,
+        ),
+        ExtractedClause(
+            position=1,
+            type=ClauseType.TERM_AND_TERMINATION,
+            number="1",
+            title="Term",
+            text="1. Term\nThis Agreement starts on March 1, 2021.",
+            start_line=4,
+            end_line=5,
+            start_page=1,
+            end_page=1,
+        ),
     )
-    assert draft.facts == ContractFacts(
+    assert result.metadata == ContractMetadata(
         title="SERVICES AGREEMENT",
         contract_type=ContractType.SERVICE_AGREEMENT,
-        effective_date="March 1, 2021",
+        effective_date=date(2021, 3, 1),
         parties=(Party(name="Acme Ltd", role="Supplier"),),
     )
-    assert draft.warnings == ()
-    assert draft.llm == LLMUsage(
+    assert result.page_count == 1
+    assert result.page_noise == (PageNoise(text="Page 1 of 1", occurrences=1),)
+    assert result.warnings == ()
+    assert result.llm == LLMUsage(
         provider="fake",
         model="fake-model",
         prompt_version=PROMPT_VERSION,
@@ -114,27 +146,40 @@ async def test_document_without_pages_goes_through_the_same_pipeline() -> None:
     parser = RecordingParser(ParsedDocument(lines=(Line(number=1, text="1. Term"),)))
     llm = FakeLLMProvider()
 
-    draft = await extract_document(SOURCE, parsers(parser), llm)
+    result = await extract_document(SOURCE, parsers(parser), llm)
 
     assert llm.calls[0]["user"] == "<document>\n1| 1. Term\n</document>"
-    assert [start.line for start in draft.starts] == [1]
+    assert result.page_count is None
+    assert [(clause.text, clause.start_page) for clause in result.clauses] == [("1. Term", None)]
 
 
-async def test_warnings_of_the_parser_and_of_the_repair_are_both_reported() -> None:
+async def test_warnings_come_in_the_order_of_the_pipeline() -> None:
     hidden_text = ExtractionWarning(code="hidden_text_removed", message="Removed hidden text.")
     parser = RecordingParser(
         ParsedDocument(lines=DOCUMENT.lines, page_count=1, warnings=(hidden_text,))
     )
-    answer = {"clauses": [{"line": 2, "type": "preamble"}, {"line": 3, "type": "duration"}]}
+    answer = {
+        "metadata": {"title": "MASTER SERVICES AGREEMENT"},
+        "clauses": [
+            {"line": 2, "type": "preamble"},
+            {"line": 4, "type": "duration", "number": "7", "title": "Term"},
+        ],
+    }
 
-    draft = await extract_document(SOURCE, parsers(parser), FakeLLMProvider(answer))
+    result = await extract_document(SOURCE, parsers(parser), FakeLLMProvider(answer))
 
-    # In the order of the pipeline: what the parser left out, then what was fixed.
-    assert [warning.code for warning in draft.warnings] == [
+    assert [warning.code for warning in result.warnings] == [
+        # What the parser left out of the file.
         "hidden_text_removed",
+        # What was repaired in the model's answer.
         "unknown_clause_type",
+        # What the model returned but the document does not say.
+        "clause_number_not_verified",
+        "title_not_verified",
     ]
-    assert draft.starts[1].type is ClauseType.OTHER
+    assert (result.clauses[1].type, result.clauses[1].number) == (ClauseType.OTHER, None)
+    assert result.clauses[1].title == "Term"
+    assert result.metadata.title is None
 
 
 @pytest.mark.parametrize(
@@ -155,7 +200,7 @@ async def test_answer_that_cannot_be_used_is_an_invalid_response(
     llm = FakeLLMProvider(answer)
 
     with pytest.raises(LLMInvalidResponseError, match=reason) as raised:
-        await extract_document(SOURCE, parsers(RecordingParser()), llm)
+        await extract_document(SOURCE, parsers(), llm)
 
     assert raised.value.message.startswith("The LLM's answer could not be used")
     # The LLM is not asked a second time.
@@ -166,7 +211,7 @@ async def test_failure_of_the_llm_is_passed_on() -> None:
     llm = FakeLLMProvider(LLMUnavailableError("The provider is unavailable."))
 
     with pytest.raises(LLMUnavailableError):
-        await extract_document(SOURCE, parsers(RecordingParser()), llm)
+        await extract_document(SOURCE, parsers(), llm)
 
 
 async def test_parsing_runs_in_a_worker_thread() -> None:
@@ -177,3 +222,98 @@ async def test_parsing_runs_in_a_worker_thread() -> None:
 
     assert parser.thread_id is not None
     assert parser.thread_id != threading.get_ident()
+
+
+# --- The pipeline with storage: one result per file ------------------------------------------
+
+
+@pytest.fixture
+def extractions(engine: AsyncEngine) -> ExtractionRepository:
+    return ExtractionRepository(create_session_factory(engine))
+
+
+async def test_new_file_is_extracted_and_stored(extractions: ExtractionRepository) -> None:
+    stored = await extract_and_store(
+        SOURCE,
+        overwrite=False,
+        parsers=parsers(),
+        llm=FakeLLMProvider(ANSWER),
+        extractions=extractions,
+    )
+
+    assert stored.created
+    found = await extractions.find_by_sha256(SOURCE.sha256)
+    assert found is not None
+    assert found.id == stored.extraction.id
+    assert [clause.number for clause in found.clauses] == [None, "1"]
+
+
+async def test_file_that_was_extracted_before_costs_no_llm_call(
+    extractions: ExtractionRepository,
+) -> None:
+    parser = RecordingParser()
+    llm = FakeLLMProvider(ANSWER)
+    first = await extract_and_store(
+        SOURCE, overwrite=False, parsers=parsers(parser), llm=llm, extractions=extractions
+    )
+
+    again = await extract_and_store(
+        SOURCE, overwrite=False, parsers=parsers(parser), llm=llm, extractions=extractions
+    )
+
+    assert not again.created
+    assert again.extraction.id == first.extraction.id
+    # Neither parsed nor sent to the LLM a second time.
+    assert len(parser.sources) == 1
+    assert len(llm.calls) == 1
+
+
+async def test_overwrite_extracts_the_file_again_and_keeps_its_id(
+    extractions: ExtractionRepository,
+) -> None:
+    one_part = {"clauses": [{"line": 2, "type": "other"}]}
+    llm = FakeLLMProvider(ANSWER, one_part)
+    first = await extract_and_store(
+        SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
+    )
+
+    replaced = await extract_and_store(
+        SOURCE, overwrite=True, parsers=parsers(), llm=llm, extractions=extractions
+    )
+
+    assert not replaced.created
+    assert replaced.extraction.id == first.extraction.id
+    assert len(llm.calls) == 2
+    found = await extractions.find_by_sha256(SOURCE.sha256)
+    assert found is not None
+    assert [clause.type for clause in found.clauses] == ["other"]
+
+
+async def test_overwrite_of_a_file_that_was_never_extracted_creates_it(
+    extractions: ExtractionRepository,
+) -> None:
+    stored = await extract_and_store(
+        SOURCE,
+        overwrite=True,
+        parsers=parsers(),
+        llm=FakeLLMProvider(ANSWER),
+        extractions=extractions,
+    )
+
+    assert stored.created
+
+
+async def test_failed_extraction_stores_nothing(extractions: ExtractionRepository) -> None:
+    llm = FakeLLMProvider("not JSON", ANSWER)
+
+    with pytest.raises(LLMInvalidResponseError):
+        await extract_and_store(
+            SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
+        )
+
+    assert await extractions.find_by_sha256(SOURCE.sha256) is None
+    # So the next upload of the same file is extracted, not answered from storage.
+    stored = await extract_and_store(
+        SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
+    )
+    assert stored.created

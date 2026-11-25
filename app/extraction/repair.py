@@ -13,6 +13,7 @@ same result.
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
@@ -27,11 +28,10 @@ from app.extraction.models import (
     ParsedDocument,
     Party,
 )
+from app.extraction.text import contains, shorten, squeeze
 
 # An answer is refused when more than this share of its clause starts needed fixing.
 MAX_FIXED_SHARE = 0.10
-
-_MAX_QUOTED_LENGTH = 60
 
 # A line that ends with one of these words cannot be the end of a sentence, so the
 # sentence runs on into the next line. "and" and "or" are left out on purpose: a list
@@ -47,6 +47,13 @@ _WORDS_THAT_CANNOT_END_A_SENTENCE = frozenset(
     }
 )  # fmt: skip
 _LAST_WORD = re.compile(r"([A-Za-z]+)\s*$")
+
+# What the heading of an attachment looks like: the word, an identifier, and then a
+# colon or nothing. "Exhibit A: Access Security Requirements" and "APPENDIX B" do.
+# "Appendix C of this Agreement in accordance with ..." does not: it is a sentence.
+_ATTACHMENT_HEADING = re.compile(
+    r"\s*(?:exhibit|appendix|schedule|annex)\s+[^\s:]+\s*(?::|$)", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,7 @@ def repair_answer(answer: ExtractionAnswer, document: ParsedDocument) -> Repaire
     starts = _in_document_order(starts, repairs)
     starts = _one_start_per_line(starts, repairs)
     starts = _moved_up_to_their_titles(starts, document, repairs)
+    starts = _moved_up_to_attachment_headings(starts, document, repairs)
     starts = _without_starts_in_mid_sentence(starts, document, repairs)
     if starts:
         starts = _from_the_first_line(starts, document, repairs)
@@ -154,7 +162,7 @@ def _known_clause_type(raw: RawClauseStart, repairs: _Repairs) -> ClauseType:
     label = _as_label(raw.type)
     if label in ClauseType:
         return ClauseType(label)
-    given = f'the unknown type "{_shorten(raw.type)}"' if raw.type else "no type"
+    given = f'the unknown type "{shorten(raw.type)}"' if raw.type else "no type"
     repairs.fix(
         "unknown_clause_type",
         f'The clause start on line {raw.line} had {given} and was labelled "other".',
@@ -211,13 +219,57 @@ def _moved_up_to_their_titles(
             start.title
             and above is not None
             and above.number not in taken
-            and _contains(above.text, start.title)
-            and not _contains(content[index].text, start.title, ignore_case=True)
+            and contains(above.text, start.title)
+            and not contains(content[index].text, start.title, ignore_case=True)
         ):
             repairs.fix(
                 "clause_start_moved_to_title",
                 f"The clause start on line {start.line} was moved up to line {above.number}, "
-                f'where its title "{_shorten(start.title)}" is written.',
+                f'where its title "{shorten(start.title)}" is written.',
+            )
+            taken.discard(start.line)
+            taken.add(above.number)
+            start = replace(start, line=above.number)
+        moved.append(start)
+    return moved
+
+
+def _moved_up_to_attachment_headings(
+    starts: list[ClauseStart], document: ParsedDocument, repairs: _Repairs
+) -> list[ClauseStart]:
+    """Move a start up one line when the line above is the heading of an attachment.
+
+    "Exhibit A: Access Security Requirements", and below it the first paragraph. The
+    model sometimes points at the paragraph, and not always with a title, so the rule
+    above cannot catch every case.
+
+    The line above is taken for such a heading only when two things hold. It is
+    Exhibit, Appendix, Schedule or Annex, then an identifier, then a colon or the end
+    of the line. And the line before it ends a sentence, so the heading does not
+    continue one. A reference that wraps onto a new line fails both tests:
+    "... set forth in" and then "Appendix C of this Agreement in accordance with ...".
+
+    A start that is on such a heading itself stays where it is. The line above it can
+    be the last row of a list of exhibits, and that row is not its heading.
+    """
+    content = document.content_lines
+    position = {line.number: index for index, line in enumerate(content)}
+    taken = {start.line for start in starts}
+
+    moved = []
+    for start in starts:
+        index = position[start.line]
+        above = content[index - 1] if index > 0 else None
+        if (
+            above is not None
+            and above.number not in taken
+            and _is_attachment_heading(content, index - 1)
+            and not _ATTACHMENT_HEADING.match(content[index].text)
+        ):
+            repairs.fix(
+                "clause_start_moved_to_heading",
+                f"The clause start on line {start.line} was moved up to line {above.number}, "
+                f'which is the heading "{shorten(above.text)}".',
             )
             taken.discard(start.line)
             taken.add(above.number)
@@ -256,7 +308,7 @@ def _without_starts_in_mid_sentence(
             repairs.fix(
                 "clause_start_in_mid_sentence",
                 f"The clause start on line {start.line} was dropped: its number "
-                f'"{_shorten(start.number)}" is also the number of another clause, and line '
+                f'"{shorten(start.number)}" is also the number of another clause, and line '
                 f"{above.number} above it ends in the middle of a sentence.",
             )
             # One start with this number always survives.
@@ -298,7 +350,7 @@ def _facts(answer: ExtractionAnswer, repairs: _Repairs) -> ContractFacts:
             contract_type = ContractType.OTHER
             repairs.note(
                 "unknown_contract_type",
-                f'The unknown contract type "{_shorten(metadata.contract_type)}" was '
+                f'The unknown contract type "{shorten(metadata.contract_type)}" was '
                 'replaced by "other".',
             )
 
@@ -326,27 +378,20 @@ def _without_closing_dot(number: str | None) -> str | None:
 
 
 def _number_key(number: str) -> str:
-    return " ".join(number.rstrip(". ").casefold().split())
+    return squeeze(number.rstrip(". ").casefold())
 
 
-def _contains(text: str, part: str, *, ignore_case: bool = False) -> bool:
-    """Whether `part` appears in `text`. The amount of whitespace never matters."""
-    text, part = " ".join(text.split()), " ".join(part.split())
-    if ignore_case:
-        text, part = text.casefold(), part.casefold()
-    return part in text
+def _is_attachment_heading(content: Sequence[Line], index: int) -> bool:
+    """Whether the line at `index` looks like the heading of an attachment and stands
+    like one: the line before it, if there is one, ends a sentence."""
+    if not _ATTACHMENT_HEADING.match(content[index].text):
+        return False
+    return index == 0 or not _ends_in_mid_sentence(content[index - 1])
 
 
 def _ends_in_mid_sentence(line: Line) -> bool:
     last_word = _LAST_WORD.search(line.text)
     return last_word is not None and last_word.group(1).lower() in _WORDS_THAT_CANNOT_END_A_SENTENCE
-
-
-def _shorten(text: str | None) -> str:
-    text = text or ""
-    if len(text) <= _MAX_QUOTED_LENGTH:
-        return text
-    return text[: _MAX_QUOTED_LENGTH - 1] + "…"
 
 
 def _count(number: int, noun: str) -> str:

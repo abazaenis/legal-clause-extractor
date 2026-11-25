@@ -78,18 +78,30 @@ def test_system_prompt_is_the_versioned_file() -> None:
     assert system_prompt() == prompt_file.read_text(encoding="utf-8").strip()
 
 
-def test_version_two_is_in_use_and_version_one_is_kept() -> None:
-    assert PROMPT_VERSION == "v2"
-    # The older prompt stays in the repository, so the two can be compared.
+def earlier_version(version: str) -> str:
+    return (PROMPTS / f"extract_{version}.md").read_text(encoding="utf-8")
+
+
+def test_version_three_is_in_use_and_the_earlier_versions_are_kept() -> None:
+    assert PROMPT_VERSION == "v3"
+    # The older prompts stay in the repository, so the versions can be compared.
     assert (PROMPTS / "extract_v1.md").is_file()
+    assert (PROMPTS / "extract_v2.md").is_file()
 
 
-def test_version_two_says_where_the_signature_block_starts() -> None:
-    first_version = (PROMPTS / "extract_v1.md").read_text(encoding="utf-8")
-
+def test_version_two_added_where_the_signature_block_starts() -> None:
     for phrase in ("IN WITNESS WHEREOF", "effective as of the date of the last signature below"):
+        assert phrase not in earlier_version("v1")
+        assert phrase in earlier_version("v2")
+        # And the current version still says it.
         assert phrase in system_prompt()
-        assert phrase not in first_version
+
+
+def test_version_three_added_that_a_part_starts_at_its_heading() -> None:
+    sentence = "A part starts at its heading, never at the first paragraph below it."
+
+    assert sentence not in earlier_version("v2")
+    assert sentence in system_prompt()
 
 
 def test_system_prompt_lists_every_type_the_code_knows() -> None:
