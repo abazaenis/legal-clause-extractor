@@ -5,6 +5,7 @@ import pytest
 from app.errors import UnsupportedFileTypeError
 from app.extraction.file_types import FileType
 from app.extraction.models import Line, ParsedDocument, SourceFile
+from app.extraction.parsers.docx import DocxParser
 from app.extraction.parsers.factory import ParserFactory, build_parser_factory
 from app.extraction.parsers.pdf import PdfParser
 
@@ -22,10 +23,14 @@ class ParagraphParser:
         )
 
 
-def test_application_factory_reads_pdf_files() -> None:
+def test_application_factory_has_a_parser_for_every_supported_file_type() -> None:
     factory = build_parser_factory(max_pages=300)
 
     assert isinstance(factory.for_file_type(FileType.PDF), PdfParser)
+    assert isinstance(factory.for_file_type(FileType.DOCX), DocxParser)
+    # A file type that is recognised must be readable.
+    for file_type in FileType:
+        factory.for_file_type(file_type)
 
 
 def test_file_type_without_a_parser_is_unsupported() -> None:

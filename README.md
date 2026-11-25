@@ -6,11 +6,11 @@
 
 ```mermaid
 flowchart TD
-    client(["Client"]) -->|"POST /api/extract with one PDF"| checks["Check the upload:<br/>size, not empty, file type by content"]
+    client(["Client"]) -->|"POST /api/extract with one PDF or Word file"| checks["Check the upload:<br/>size, not empty, file type by content"]
     checks -->|"rejected"| reject["413, 415 or 422"]
     checks -->|"accepted"| known{"Same file already extracted,<br/>and no overwrite requested?"}
     known -->|"yes"| stored["200 with the stored extraction,<br/>no LLM call"]
-    known -->|"no"| parse["The parser for the file type returns numbered lines<br/>PDF: pdfplumber in a worker thread, with page headers,<br/>footers and page numbers flagged"]
+    known -->|"no"| parse["The parser for the file type returns numbered lines,<br/>with page headers, footers and page numbers flagged<br/>PDF: a line of a page. Word: a paragraph, with the number Word shows"]
     parse -->|"encrypted, damaged, too long or no text"| unreadable["422"]
     parse --> llm["One LLM call:<br/>returns clause start lines, labels and metadata"]
     llm -->|"empty or not valid JSON"| fail["502"]
@@ -203,10 +203,10 @@ The settings, all read from the environment or a `.env` file:
 
 - **One interface, one parser per format.** A parser takes a validated file and returns a `ParsedDocument`. Everything format-specific stays inside it: how the text is read, what counts as a line, and how page noise is recognised.
 - **A factory picks the parser by file type.** Supporting a new format takes one parser class and one line in the factory.
-- **Every parser returns the same output**: the document's lines in reading order, each with a number, its text, an optional page and a noise flag. The rest of the pipeline only ever sees this output, so it never knows whether the file was a PDF or something else.
-- **Page fields are optional**, in that output and in the database. A Word document has paragraphs but no pages, so a future Word parser leaves them empty.
+- **Every parser returns the same output**: the document's lines in reading order, each with a number, its text, an optional page and a noise flag. The rest of the pipeline only ever sees this output, so it never knows whether the file was a PDF or a Word document.
+- **Page fields are optional**, in that output and in the database. A Word document has paragraphs but no pages, so the Word parser leaves them empty.
 - **Parsing runs in a worker thread**, so it does not block the event loop.
-- **Hidden text never reaches the prompt.** White text on a white background is invisible to a reader, which makes it the obvious place to plant instructions for the LLM. The PDF parser leaves it out and reports it in `warnings`, quoting what it left out, so nothing disappears silently. White text on a coloured shape or on an image is visible and is kept. One of the sample NDAs carries such a line: "Updated 2016".
+- **Hidden text never reaches the prompt.** White text on a white background is invisible to a reader, which makes it the obvious place to plant instructions for the LLM. The PDF parser leaves it out and reports it in `warnings`, quoting what it left out, so nothing disappears silently. White text on a coloured shape or on an image is visible and is kept. One of the sample NDAs carries such a line: "Updated 2016". In a Word document the same is done with text that carries Word's own "hidden" attribute.
 - **Lines are grouped with a tolerance of 5 points.** pdfplumber's default of 3 puts a clause number set in a larger font on a line of its own, above its title, as in "1. All Users Must Have a Permissible Purpose" in the sample service agreement.
 
 #### Page noise
@@ -237,6 +237,34 @@ I compared two permissively licensed libraries on the sample contracts (Python 3
 | Footer is the last line of its page (176-page agreement) | 0 of 176 pages | 176 of 176 pages |
 
 I chose pdfplumber. pypdfium2 is 20 to 40 times faster, but it returns text in the order it is stored in the file, so footers and page numbers land at the top or in the middle of a page. pdfplumber returns lines in visual order, top to bottom, which is what numbering the lines and removing page headers and footers depend on. Correctness matters more than speed here, and a few seconds of parsing is small next to the LLM call. PyMuPDF was not a candidate because it is AGPL-licensed.
+
+#### Word documents
+
+A `.docx` file is a ZIP file of XML parts. The parser reads three of them with the standard library: the text, the styles and the numbering definitions.
+
+- **A paragraph is a line, and so is a row of a table.** Empty paragraphs take no line number. The cells of a row are joined with ` | `. There are no pages: where a page ends is decided by the program that shows the document.
+- **The clause numbers are computed.** In a contract written in Word the numbers are usually not in the text. A paragraph only says which list and level it belongs to, often through its style, and Word works out `1.`, `1.1` and `(a)` when it shows the page. [docx_numbering.py](app/extraction/parsers/docx_numbering.py) does the same and puts the number in front of the paragraph, so a line reads as it does in Word. The sample master agreement has 90 such numbers and none in its text. A warning, `numbers_computed`, says how many were computed.
+- **No Word library.** `python-docx` has no number labels, and its way of walking the body skips content controls, which hold 117 of the 140 paragraphs of that sample. `docx2python` ignores numbers that come from styles. The numbering had to be written either way, and the rest is about ten element names.
+- **Page numbers typed into the body are flagged.** The other sample was converted from a web page and carries its page numbers as paragraphs, three of them in the middle of a sentence. Bare numbers that count upwards by one, at least three of them and not starting at 1, are flagged as page noise like in a PDF. A run that starts at 1 could be a list typed by hand and is left alone.
+- **What is not read is reported.** Deleted text of tracked changes, text boxes and footnotes are not read, and a warning says so each time. Tracked changes are read as if they had been accepted.
+- **The file is not trusted.** A part may unpack to 50 MB at most. A ZIP directory that understates a size fails its checksum. A part that declares a document type is refused before any entity is expanded, with the XML parser's own hook, so the encoding of the file cannot hide it. Nothing is written to disk.
+- **The length limit is the same.** A Word document has no pages, so its length is estimated at 3,000 characters a page and checked against `MAX_PAGES`.
+
+Both Word samples through the running API, with version 3 of the prompt:
+
+| Sample | Lines | `none`: time | `none`: clauses | `high`: time | `high`: clauses |
+|---|---|---|---|---|---|
+| Service agreement, numbers typed | 102 | 4.3 s | 57 | 76.6 s | 57 |
+| Master agreement, numbers computed | 113 | 6.5 s | 105 | 85.1 s | 94 |
+
+In all four runs every number, computed or typed, was found at the start of its clause, and the clause texts add up to the document. At `none` the model made a part of each row of the notice table and of each template placeholder. At `high` it kept them inside their clauses.
+
+Not handled:
+
+- White text, and hidden text that comes from a style. White text can be perfectly visible on a dark table header, and the parser cannot see the page.
+- The old `.doc` format. It is refused with a message that says to save the file as `.docx` or PDF.
+- A paragraph that holds a heading and its first sub-clause. A clause starts at a line, so the two stay together, with every word present.
+- Corners of Word's numbering that the file format leaves open, such as several lists sharing one definition. A computed number can differ from what Word shows there.
 
 ### Data model
 
@@ -274,9 +302,9 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 
 ### API
 
-- **One file per request.** `POST /api/extract` takes a single PDF as multipart form data, runs the extraction synchronously and returns `201` with the full result and a `Location` header.
+- **One file per request.** `POST /api/extract` takes a single PDF or Word (.docx) file as multipart form data, runs the extraction synchronously and returns `201` with the full result and a `Location` header.
 - **The upload limit is enforced while the body arrives.** FastAPI reads a whole upload before the endpoint runs, so a size check inside the endpoint comes too late. A small middleware refuses a declared `Content-Length` over the limit before reading anything, and counts a streamed body so that a missing or wrong `Content-Length` cannot get around it.
-- **The file type is decided by content.** The first bytes must be a PDF header. The file name and the content type the client declares are ignored.
+- **The file type is decided by content.** A PDF is recognised by its header, and a Word document by the part that holds its text inside the ZIP file. The file name and the content type the client declares are ignored. An old `.doc` file and a password-protected Word file are refused with a message that says what to do.
 - **One resource, read two ways.** `GET /api/extractions/{document_id}` returns the stored result, with exactly the body the upload returned. The `Location` header of the upload points at it. `GET /api/extractions` returns summaries: the file, the contract metadata, and the number of clauses and warnings. It reads no clause text, so the list stays light however long the contracts are.
 - **Same file, same id.** A file is identified by the SHA-256 of its bytes, so uploading it again never creates a second result. A repeat upload returns the stored result with `200` and makes no LLM call. `?overwrite=true` runs the extraction again and replaces the stored result, keeping the id.
 - **A stored result and a fresh one are the same response.** Both are built from the stored row, and a test checks that the second upload of a file returns exactly the body of the first. The response groups what belongs together: `file`, `metadata`, `clauses`, `warnings`, `page_noise` and `llm`.
@@ -342,7 +370,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **Batch uploads.** `POST /api/extract` accepts one file per request. I would let it take several files and process them in parallel, which is faster for the client than uploading them one by one. Each file would get its own result or its own error, so one bad file does not fail the batch. This fits best on top of the background-job design above, where every file becomes its own job.
 - **Cancellation.** Once extraction runs as a job, cancelling an upload should also cancel the in-flight LLM call, so we stop paying for output nobody will read.
 - **Documents and extraction runs.** A file has one stored result, keyed by its hash. I would split that into `documents` and `extraction_runs`, with duplicate detection scoped per customer. The reasons are in the data model section above.
-- **Word documents.** A second parser behind the same interface, with paragraphs as lines and no pages. Two things in the sample files need care: Word generates clause numbers from paragraph styles, so they are not in the text, and one file has page numbers as ordinary paragraphs in the middle of sentences.
+- **More of Word.** Text boxes, footnotes and comments are reported but not read, and white text is not detected. Next I would read a footnote into the clause that refers to it, and check the computed clause numbers against documents rendered by Word itself.
 - **Scanned documents.** A PDF without a text layer needs OCR. I would add it as a separate, explicitly lower-confidence path, because an OCR error in a contract is not cosmetic. OCR is slow per page, so this is also where splitting the work by page and running it in parallel pays off; plain text extraction is fast enough not to need it.
 - **Filled-in form fields.** In the notice-address form of the sample service agreement, the typed values are interleaved with the underscores of the blank lines: `P_.O._ B_o_x_ 7_6_6` and `4_7_9-4_3_9-_9_1_7_4`. Every character is there, but the text is neither readable nor searchable. It only affects that form, which is not extracted as a clause.
 
@@ -370,7 +398,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **PostgreSQL and keyset pagination** in place of SQLite and offset pagination. With an offset, a new extraction that arrives between two requests shifts every later page by one, and a deep page costs as much as all the pages before it.
 - **Parse PDFs in a process pool.** pdfplumber is pure Python, so a long parse slows other requests while it runs. A process pool would isolate it.
 - **Health checks.** Liveness and readiness endpoints for the container orchestrator and load balancer.
-- **Prompt-injection hardening.** Contract text is untrusted input to the model. The model has no tools and its output is validated against the source, which limits what an injected instruction can do, and white text on a white background is already left out. Other ways to hide text are not covered yet: an invisible text rendering mode, a tiny font, text placed outside the page, text covered by a shape, and text in the same colour as a coloured background. I would add those, along with adversarial test contracts and monitoring for unusual outputs.
+- **Prompt-injection hardening.** Contract text is untrusted input to the model. The model has no tools and its output is validated against the source, which limits what an injected instruction can do, and two ways of hiding text are already closed: white text on a white background in a PDF, and Word's hidden attribute. Other ways are not covered yet: white text in a Word file, an invisible text rendering mode, a tiny font, text placed outside the page, text covered by a shape, and text in the same colour as a coloured background. I would add those, along with adversarial test contracts and monitoring for unusual outputs.
 - **CORS**, restricted to known origins, once a browser client exists.
 - **Response compression at the edge** (reverse proxy or gateway) and not in the application.
 
