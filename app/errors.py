@@ -4,6 +4,8 @@ Each one carries an HTTP status and a stable, machine-readable code. The API lay
 turns them into the single JSON shape that every error response uses.
 """
 
+import uuid
+
 
 class AppError(Exception):
     """Base class: an error the caller can understand and act on."""
@@ -57,6 +59,14 @@ class TooManyPagesError(AppError):
 class NoTextFoundError(AppError):
     status_code = 422
     code = "no_text_found"
+
+
+class ExtractionNotFoundError(AppError):
+    status_code = 404
+    code = "extraction_not_found"
+
+    def __init__(self, document_id: uuid.UUID) -> None:
+        super().__init__(f"No extraction is stored for the document id {document_id}.")
 
 
 class LLMTimeoutError(AppError):

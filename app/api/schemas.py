@@ -7,6 +7,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.models import Extraction
+from app.db.repository import ExtractionPage, ListedExtraction
 from app.extraction.labels import ClauseType, ContractType
 
 
@@ -126,21 +127,8 @@ class ExtractionResponse(BaseModel):
         return cls(
             document_id=row.id,
             created_at=row.created_at,
-            file=FileOut(
-                filename=row.filename,
-                content_type=row.content_type,
-                size_bytes=row.size_bytes,
-                page_count=row.page_count,
-                sha256=row.sha256,
-            ),
-            metadata=ContractMetadataOut.model_validate(
-                {
-                    "title": row.title,
-                    "contract_type": row.contract_type,
-                    "effective_date": row.effective_date,
-                    "parties": row.parties,
-                }
-            ),
+            file=_file_of(row),
+            metadata=_metadata_of(row),
             clauses=[ClauseOut.model_validate(clause) for clause in row.clauses],
             warnings=[WarningOut.model_validate(warning) for warning in row.warnings],
             page_noise=[PageNoiseOut.model_validate(noise) for noise in row.page_noise],
@@ -153,3 +141,67 @@ class ExtractionResponse(BaseModel):
                 duration_ms=row.llm_duration_ms,
             ),
         )
+
+
+class ExtractionSummary(BaseModel):
+    """A stored extraction as the list shows it: what the contract is, without its clauses."""
+
+    document_id: uuid.UUID = Field(
+        description="Pass it to `GET /api/extractions/{document_id}` for the full result."
+    )
+    created_at: datetime = Field(description="When the stored result was produced, in UTC.")
+    file: FileOut
+    metadata: ContractMetadataOut
+    clause_count: int
+    warning_count: int = Field(description="How many warnings the full result carries.")
+
+    @classmethod
+    def from_listed(cls, listed: ListedExtraction) -> Self:
+        row = listed.extraction
+        return cls(
+            document_id=row.id,
+            created_at=row.created_at,
+            file=_file_of(row),
+            metadata=_metadata_of(row),
+            clause_count=listed.clause_count,
+            warning_count=len(row.warnings),
+        )
+
+
+class ExtractionListResponse(BaseModel):
+    """One page of the stored extractions, newest first."""
+
+    items: list[ExtractionSummary]
+    total: int = Field(description="How many extractions are stored, on all pages together.")
+    limit: int = Field(description="The page size that was asked for.")
+    offset: int = Field(description="How many extractions were skipped, counted from the newest.")
+
+    @classmethod
+    def from_page(cls, page: ExtractionPage, *, limit: int, offset: int) -> Self:
+        return cls(
+            items=[ExtractionSummary.from_listed(listed) for listed in page.items],
+            total=page.total,
+            limit=limit,
+            offset=offset,
+        )
+
+
+def _file_of(row: Extraction) -> FileOut:
+    return FileOut(
+        filename=row.filename,
+        content_type=row.content_type,
+        size_bytes=row.size_bytes,
+        page_count=row.page_count,
+        sha256=row.sha256,
+    )
+
+
+def _metadata_of(row: Extraction) -> ContractMetadataOut:
+    return ContractMetadataOut.model_validate(
+        {
+            "title": row.title,
+            "contract_type": row.contract_type,
+            "effective_date": row.effective_date,
+            "parties": row.parties,
+        }
+    )

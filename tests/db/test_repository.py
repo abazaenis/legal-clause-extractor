@@ -1,5 +1,6 @@
 """Storing an extraction and finding it again."""
 
+import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
@@ -230,5 +231,93 @@ async def test_no_connection_is_held_between_calls(
     await extractions.find_by_sha256(SOURCE.sha256)
     assert pool.checkedout() == 0  # type: ignore[attr-defined]
 
-    await extractions.save(SOURCE, result())
+    stored = await extractions.save(SOURCE, result())
     assert pool.checkedout() == 0  # type: ignore[attr-defined]
+
+    await extractions.find_by_id(stored.extraction.id)
+    await extractions.list_page(limit=10, offset=0)
+    assert pool.checkedout() == 0  # type: ignore[attr-defined]
+
+
+# --- Reading: one extraction by its id, and a page of them --------------------------------------
+
+
+def file_number(number: int) -> SourceFile:
+    """A file of its own: another name and another hash."""
+    return replace(SOURCE, filename=f"contract-{number}.pdf", sha256=f"{number:064d}")
+
+
+async def test_stored_result_is_found_by_its_id(extractions: ExtractionRepository) -> None:
+    stored = await extractions.save(SOURCE, result(clause(0), clause(1)))
+    await extractions.save(file_number(2), result())
+
+    found = await extractions.find_by_id(stored.extraction.id)
+
+    assert found is not None
+    assert (found.id, found.sha256) == (stored.extraction.id, SOURCE.sha256)
+    # It comes back complete, with its clauses.
+    assert [c.number for c in found.clauses] == ["1", "2"]
+
+
+async def test_id_that_was_never_given_out_is_not_found(extractions: ExtractionRepository) -> None:
+    await extractions.save(SOURCE, result())
+
+    assert await extractions.find_by_id(uuid.uuid7()) is None
+
+
+async def test_page_lists_the_newest_first_with_the_number_of_clauses(
+    extractions: ExtractionRepository,
+) -> None:
+    for number in (1, 2, 3):
+        await extractions.save(
+            file_number(number), result(*(clause(position) for position in range(number)))
+        )
+
+    page = await extractions.list_page(limit=10, offset=0)
+
+    assert page.total == 3
+    assert [(listed.extraction.filename, listed.clause_count) for listed in page.items] == [
+        ("contract-3.pdf", 3),
+        ("contract-2.pdf", 2),
+        ("contract-1.pdf", 1),
+    ]
+    # Everything a summary needs is on the row.
+    assert page.items[0].extraction.title == "MUTUAL NON-DISCLOSURE AGREEMENT"
+    assert page.items[0].extraction.warnings == [
+        {"code": "hidden_text_removed", "message": "Left out a line."}
+    ]
+
+
+async def test_page_is_cut_by_limit_and_offset(extractions: ExtractionRepository) -> None:
+    for number in range(1, 6):
+        await extractions.save(file_number(number), result())
+
+    async def names(limit: int, offset: int) -> list[str]:
+        page = await extractions.list_page(limit=limit, offset=offset)
+        assert page.total == 5
+        return [listed.extraction.filename for listed in page.items]
+
+    assert await names(2, 0) == ["contract-5.pdf", "contract-4.pdf"]
+    assert await names(2, 2) == ["contract-3.pdf", "contract-2.pdf"]
+    assert await names(2, 4) == ["contract-1.pdf"]
+    assert await names(2, 6) == []
+
+
+async def test_replaced_result_is_the_newest_again(extractions: ExtractionRepository) -> None:
+    await extractions.save(file_number(1), result())
+    await extractions.save(file_number(2), result())
+
+    await extractions.save(file_number(1), result())
+
+    page = await extractions.list_page(limit=10, offset=0)
+    assert [listed.extraction.filename for listed in page.items] == [
+        "contract-1.pdf",
+        "contract-2.pdf",
+    ]
+    assert page.total == 2
+
+
+async def test_page_of_nothing_is_empty(extractions: ExtractionRepository) -> None:
+    page = await extractions.list_page(limit=10, offset=0)
+
+    assert (page.items, page.total) == ((), 0)

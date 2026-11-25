@@ -261,13 +261,14 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 - **One file per request.** `POST /api/extract` takes a single PDF as multipart form data, runs the extraction synchronously and returns `201` with the full result and a `Location` header.
 - **The upload limit is enforced while the body arrives.** FastAPI reads a whole upload before the endpoint runs, so a size check inside the endpoint comes too late. A small middleware refuses a declared `Content-Length` over the limit before reading anything, and counts a streamed body so that a missing or wrong `Content-Length` cannot get around it.
 - **The file type is decided by content.** The first bytes must be a PDF header. The file name and the content type the client declares are ignored.
-- **One resource.** The stored result is read back with `GET /api/extractions/{document_id}`. The list endpoint returns summaries without clause text.
+- **One resource, read two ways.** `GET /api/extractions/{document_id}` returns the stored result, with exactly the body the upload returned. The `Location` header of the upload points at it. `GET /api/extractions` returns summaries: the file, the contract metadata, and the number of clauses and warnings. It reads no clause text, so the list stays light however long the contracts are.
 - **Same file, same id.** A file is identified by the SHA-256 of its bytes, so uploading it again never creates a second result. A repeat upload returns the stored result with `200` and makes no LLM call. `?overwrite=true` runs the extraction again and replaces the stored result, keeping the id.
 - **A stored result and a fresh one are the same response.** Both are built from the stored row, and a test checks that the second upload of a file returns exactly the body of the first. The response groups what belongs together: `file`, `metadata`, `clauses`, `warnings`, `page_noise` and `llm`.
 - **A failed extraction stores nothing.** The next upload of the same file is extracted again.
 - **Clauses are a flat list in document order.** There is no nesting. Where a contract is hierarchical, each clause's `number` shows where it sits.
-- **Pagination data is in the response body** (`items`, `total`, `limit`, `offset`), using limit and offset. It is typed, it appears in the OpenAPI docs for free, and it is hard to miss. `Link` headers would be the alternative.
-- **One small error shape for every failure**: `{"error": {"code": "...", "message": "..."}}`. The status code says where the problem is: `413`, `415` and `422` for the upload, `404` for an unknown id, `502` and `504` for the LLM.
+- **Pagination data is in the response body** (`items`, `total`, `limit`, `offset`), using limit and offset. It is typed, it appears in the OpenAPI docs for free, and it is hard to miss. `Link` headers would be the alternative. `limit` is 20 by default and 100 at most.
+- **The list is ordered newest first**, by the time the stored result was produced. The id breaks a tie, so the order is the same on every request and no extraction is on two pages. An overwrite makes a result the newest again.
+- **One small error shape for every failure**: `{"error": {"code": "...", "message": "..."}}`. The status code says where the problem is: `413`, `415` and `422` for the upload, `422` for an id that is not a UUID or a page parameter out of range, `404` for an unknown id, `502` and `504` for the LLM.
 
 ## What I'd do with more time
 
@@ -323,7 +324,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **Rate limiting and per-tenant quotas**, aware of token spend and not only of request counts.
 - **Circuit breaker and provider fallback** around the LLM call, so an upstream outage fails fast.
 - **Metrics, tracing and alerting.** Latency and token usage per stage, validation-failure rate and cost per document, with alerts on error rate and spend.
-- **PostgreSQL and keyset pagination** in place of SQLite and offset pagination.
+- **PostgreSQL and keyset pagination** in place of SQLite and offset pagination. With an offset, a new extraction that arrives between two requests shifts every later page by one, and a deep page costs as much as all the pages before it.
 - **Parse PDFs in a process pool.** pdfplumber is pure Python, so a long parse slows other requests while it runs. A process pool would isolate it.
 - **Health checks.** Liveness and readiness endpoints for the container orchestrator and load balancer.
 - **Prompt-injection hardening.** Contract text is untrusted input to the model. The model has no tools and its output is validated against the source, which limits what an injected instruction can do, and white text on a white background is already left out. Other ways to hide text are not covered yet: an invisible text rendering mode, a tiny font, text placed outside the page, text covered by a shape, and text in the same colour as a coloured background. I would add those, along with adversarial test contracts and monitoring for unusual outputs.

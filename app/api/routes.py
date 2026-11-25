@@ -1,8 +1,9 @@
 """The HTTP endpoints."""
 
+import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Path, Query, Response, UploadFile, status
 
 from app.api.dependencies import (
     ExtractionRepositoryDependency,
@@ -10,11 +11,15 @@ from app.api.dependencies import (
     ParserFactoryDependency,
     SettingsDependency,
 )
-from app.api.schemas import ErrorResponse, ExtractionResponse
+from app.api.schemas import ErrorResponse, ExtractionListResponse, ExtractionResponse
 from app.api.upload import read_upload
+from app.errors import ExtractionNotFoundError
 from app.extraction.service import extract_and_store
 
 router = APIRouter(prefix="/api", tags=["extractions"])
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 _EXTRACT_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_201_CREATED: {
@@ -92,7 +97,65 @@ async def extract(
         source, overwrite=overwrite, parsers=parsers, llm=llm, extractions=extractions
     )
     if stored.created:
-        response.headers["Location"] = f"{router.prefix}/extractions/{stored.extraction.id}"
+        response.headers["Location"] = router.url_path_for(
+            "get_extraction", document_id=str(stored.extraction.id)
+        )
     else:
         response.status_code = status.HTTP_200_OK
     return ExtractionResponse.from_row(stored.extraction)
+
+
+@router.get(
+    "/extractions",
+    summary="List the stored extractions",
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "`limit` or `offset` is not a number in the allowed range.",
+        },
+    },
+)
+async def list_extractions(
+    extractions: ExtractionRepositoryDependency,
+    limit: Annotated[
+        int, Query(ge=1, le=MAX_PAGE_SIZE, description="How many extractions to return.")
+    ] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[
+        int, Query(ge=0, description="How many extractions to skip, counted from the newest.")
+    ] = 0,
+) -> ExtractionListResponse:
+    """Return one page of the stored extractions, newest first.
+
+    Each item is a summary: the file, the contract metadata and the number of clauses.
+    The clauses themselves come with `GET /api/extractions/{document_id}`. `total`
+    says how many extractions there are in all, so a client knows when to stop.
+    """
+    page = await extractions.list_page(limit=limit, offset=offset)
+    return ExtractionListResponse.from_page(page, limit=limit, offset=offset)
+
+
+@router.get(
+    "/extractions/{document_id}",
+    summary="Get one stored extraction",
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "No extraction is stored for this document id.",
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "The document id is not a UUID.",
+        },
+    },
+)
+async def get_extraction(
+    document_id: Annotated[
+        uuid.UUID, Path(description="The `document_id` that `POST /api/extract` returned.")
+    ],
+    extractions: ExtractionRepositoryDependency,
+) -> ExtractionResponse:
+    """Return the stored result of a contract, as `POST /api/extract` returned it."""
+    extraction = await extractions.find_by_id(document_id)
+    if extraction is None:
+        raise ExtractionNotFoundError(document_id)
+    return ExtractionResponse.from_row(extraction)
