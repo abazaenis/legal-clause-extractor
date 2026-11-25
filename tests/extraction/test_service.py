@@ -5,6 +5,7 @@ from datetime import date
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
+from structlog.testing import capture_logs
 
 from app.db.repository import ExtractionRepository
 from app.db.session import create_session_factory
@@ -317,3 +318,71 @@ async def test_failed_extraction_stores_nothing(extractions: ExtractionRepositor
         SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
     )
     assert stored.created
+
+
+# --- What the pipeline logs --------------------------------------------------------------------
+
+
+async def test_pipeline_logs_counts_and_codes_and_nothing_of_the_document(
+    extractions: ExtractionRepository,
+) -> None:
+    answer = {
+        "metadata": {"title": "SERVICES AGREEMENT"},
+        "clauses": [
+            {"line": 2, "type": "preamble"},
+            {"line": 4, "type": "validity", "number": "1", "title": "Term"},
+        ],
+    }
+
+    with capture_logs() as logs:
+        stored = await extract_and_store(
+            SOURCE,
+            overwrite=False,
+            parsers=parsers(),
+            llm=FakeLLMProvider(answer),
+            extractions=extractions,
+        )
+        await extract_and_store(
+            SOURCE,
+            overwrite=False,
+            parsers=parsers(),
+            llm=FakeLLMProvider(answer),
+            extractions=extractions,
+        )
+
+    parsed, finished, saved, served = logs
+    document_id = str(stored.extraction.id)
+    assert parsed == {
+        "event": "document_parsed",
+        "log_level": "info",
+        "file_type": "pdf",
+        "size_bytes": 5,
+        "pages": 1,
+        "lines": 5,
+        "noise_lines": 1,
+        "duration_ms": parsed["duration_ms"],
+    }
+    assert finished == {
+        "event": "extraction_finished",
+        "log_level": "info",
+        "clauses": 2,
+        # The code of each warning and how often it occurred, without its message.
+        "warnings": {"unknown_clause_type": 1},
+        "prompt_version": PROMPT_VERSION,
+    }
+    assert saved == {
+        "event": "extraction_stored",
+        "log_level": "info",
+        "document_id": document_id,
+        "created": True,
+    }
+    # The same file again is answered from storage.
+    assert served == {
+        "event": "extraction_served_from_storage",
+        "log_level": "info",
+        "document_id": document_id,
+    }
+    # Not the file name, not the text, not the model's labels.
+    logged = repr(logs)
+    for secret in ("contract.pdf", "SERVICES AGREEMENT", "Acme", "validity", "Term"):
+        assert secret not in logged, secret

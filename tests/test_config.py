@@ -1,6 +1,7 @@
 """Settings come from the environment, and the API key stays secret."""
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 
@@ -20,6 +21,24 @@ def test_llm_settings_are_read_from_the_environment(monkeypatch: pytest.MonkeyPa
     assert settings.llm_api_key.get_secret_value() == "key-from-env"
     assert settings.llm_model == "some-model"
     assert settings.llm_reasoning_effort == "low"
+
+
+def test_log_level_is_info_unless_the_environment_says_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert Settings(_env_file=None).log_level == "INFO"
+
+    # Written in any capitals.
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+
+    assert Settings(_env_file=None).log_level == "DEBUG"
+
+
+def test_unknown_log_level_stops_the_server_from_starting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOG_LEVEL", "LOUD")
+
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(_env_file=None)
 
 
 def test_api_key_is_masked_wherever_the_settings_are_printed() -> None:

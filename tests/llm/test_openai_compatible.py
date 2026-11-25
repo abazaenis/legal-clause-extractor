@@ -1,12 +1,12 @@
 """The OpenAI-compatible adapter, tested against a fake HTTP API."""
 
 import json
-import logging
 from typing import Any
 
 import httpx2
 import pytest
 from openai import AsyncOpenAI
+from structlog.testing import capture_logs
 
 from app.errors import (
     AppError,
@@ -203,25 +203,40 @@ async def test_provider_error_details_do_not_reach_the_caller() -> None:
     assert API_KEY not in raised.value.message
 
 
-async def test_prompts_answers_and_keys_are_never_logged(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_prompts_answers_and_keys_are_never_logged() -> None:
     api = FakeAPI(
         (200, completion('{"title": "SECRET AGREEMENT"}')),
         (401, api_error(f"Incorrect API key provided: {API_KEY}")),
     )
     provider = provider_for(api)
 
-    with caplog.at_level(logging.DEBUG, logger="app"):
+    with capture_logs() as logs:
         await provider.complete(system=SYSTEM, user=USER)
         with pytest.raises(LLMRequestRejectedError):
             await provider.complete(system=SYSTEM, user=USER)
 
-    logged = "\n".join(record.getMessage() for record in caplog.records)
+    finished, failed = logs
     # The useful facts are there.
-    assert "input_tokens=120 output_tokens=30" in logged
-    assert "status=401" in logged
+    assert finished == {
+        "event": "llm_call_finished",
+        "log_level": "info",
+        "provider": "test-provider",
+        "model": finished["model"],
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "duration_ms": finished["duration_ms"],
+        "finish_reason": "stop",
+    }
+    assert failed == {
+        "event": "llm_call_failed",
+        "log_level": "warning",
+        "provider": "test-provider",
+        "outcome": "rejected the request",
+        "error": "AuthenticationError",
+        "status": 401,
+    }
     # Contract text, the model's answer and the key are not.
+    logged = repr(logs)
     assert "CONFIDENTIAL CONTRACT TEXT" not in logged
     assert "SECRET AGREEMENT" not in logged
     assert API_KEY not in logged
