@@ -139,6 +139,7 @@ One line of text per event, with a request id on every line. Contract content is
 - **Word has no pages.** Length is estimated at 3,000 characters a page. Text boxes and footnotes are not read but are reported, tracked changes are read as accepted, and comments are ignored.
 - **Uploads are synchronous and one file at a time.** That is fine for a person running it, not for production.
 - **DeepSeek is acceptable for sample contracts.** It is not assumed to be acceptable for client data.
+- **The LLM provider is up.** When it is not, an upload fails with `502` or `504` after the SDK's retries, and nothing is stored. Reads and repeat uploads still work. There is no circuit breaker or overall deadline, so with the defaults a failing upload can take about 15 minutes.
 
 ## What I'd do with more time
 
