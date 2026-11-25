@@ -1,9 +1,10 @@
 """Reads and writes stored extractions."""
 
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -22,12 +23,30 @@ class StoredExtraction:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ListedExtraction:
+    """A stored extraction as a list shows it: without its clauses, with their number."""
+
+    # Its clauses are not loaded, and must not be read from this row.
+    extraction: Extraction
+    clause_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionPage:
+    """One page of the stored extractions, newest first."""
+
+    items: tuple[ListedExtraction, ...]
+    # How many extractions are stored in all, on every page together.
+    total: int
+
+
 class ExtractionRepository:
     """The stored extractions, one per file.
 
     Every method opens a session of its own and closes it before it returns, so no
-    database connection is held while the LLM works on a request. The rows that come
-    back are complete: their clauses are loaded with them.
+    database connection is held while the LLM works on a request. A single extraction
+    comes back complete, with its clauses. A page of them comes back without.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -37,6 +56,48 @@ class ExtractionRepository:
         """Return the stored extraction of the file with this hash, if there is one."""
         async with self._session_factory() as session:
             return await self._find(session, sha256)
+
+    async def find_by_id(self, extraction_id: uuid.UUID) -> Extraction | None:
+        """Return the stored extraction with this id, if there is one."""
+        async with self._session_factory() as session:
+            extraction: Extraction | None = await session.scalar(
+                select(Extraction)
+                .where(Extraction.id == extraction_id)
+                .options(selectinload(Extraction.clauses))
+            )
+            return extraction
+
+    async def list_page(self, *, limit: int, offset: int) -> ExtractionPage:
+        """Return `limit` stored extractions after skipping `offset`, newest first.
+
+        The clauses are not read: a list shows summaries, and the clauses hold the
+        whole text of every contract. Their number is counted in the database.
+        """
+        clause_count = (
+            select(func.count())
+            .select_from(Clause)
+            .where(Clause.extraction_id == Extraction.id)
+            .correlate(Extraction)
+            .scalar_subquery()
+        )
+        page = (
+            select(Extraction, clause_count)
+            # The id breaks a tie between two results of the same moment, so the
+            # order is the same on every request and no row is on two pages.
+            .order_by(Extraction.created_at.desc(), Extraction.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        async with self._session_factory() as session:
+            rows = (await session.execute(page)).all()
+            total = await session.scalar(select(func.count()).select_from(Extraction)) or 0
+        return ExtractionPage(
+            items=tuple(
+                ListedExtraction(extraction=extraction, clause_count=count)
+                for extraction, count in rows
+            ),
+            total=total,
+        )
 
     async def save(self, source: SourceFile, result: ExtractionResult) -> StoredExtraction:
         """Store the result for a file, in one transaction.
