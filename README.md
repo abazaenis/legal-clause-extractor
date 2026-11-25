@@ -37,7 +37,7 @@ Either way, the API is at `http://localhost:8000` and its interactive docs are a
 python demo.py
 ```
 
-It needs only Python 3.12+, no packages. It uploads every file in `demo/`, uploads each again (answered from storage), reads it back, lists what is stored, and shows a refused upload. `demo/` already holds a small made-up NDA with a running header and footer and a hidden line of white text, so page noise and hidden-text removal show up too. Files can also be named directly: `python demo.py Contracts/*.pdf`.
+It needs only Python 3.12+, no packages. It uploads every file in `demo/`, uploads each again (answered from storage), reads it back, lists what is stored, and shows a refused upload. Files in `demo/` are gitignored. They can also be named directly: `python demo.py Contracts/*.pdf`.
 
 **Tests and checks:**
 

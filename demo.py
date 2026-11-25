@@ -215,7 +215,8 @@ def files_to_upload(patterns: list[str]) -> list[Path]:
     """The files named, with wildcards expanded here because PowerShell does not expand
     them. Without any, every PDF and Word file in the demo/ folder."""
     if not patterns:
-        return sorted(p for p in DEMO_DIR.iterdir() if p.suffix.lower() in DOCUMENTS)
+        found = DEMO_DIR.iterdir() if DEMO_DIR.is_dir() else []
+        return sorted(p for p in found if p.suffix.lower() in DOCUMENTS)
     return [
         path
         for pattern in patterns
