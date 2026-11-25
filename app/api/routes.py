@@ -4,8 +4,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, UploadFile, status
 
-from app.api.dependencies import ParserFactoryDependency, SettingsDependency
-from app.api.schemas import ErrorResponse
+from app.api.dependencies import (
+    LLMProviderDependency,
+    ParserFactoryDependency,
+    SettingsDependency,
+)
+from app.api.schemas import ErrorResponse, ExtractionDraftResponse
 from app.api.upload import read_upload
 from app.extraction.service import extract_document
 
@@ -25,16 +29,21 @@ _UPLOAD_ERRORS: dict[int | str, dict[str, Any]] = {
         "description": "The `file` field is missing, or the file cannot be used: it is "
         "empty, password-protected, damaged, too long, or has no readable text.",
     },
-    status.HTTP_501_NOT_IMPLEMENTED: {
+    status.HTTP_502_BAD_GATEWAY: {
         "model": ErrorResponse,
-        "description": "The file was parsed, but clause extraction is not built yet.",
+        "description": "The LLM provider failed or refused the request, or its answer could "
+        "not be used: it was empty, was not valid JSON, or needed more than 10% of its "
+        "clause starts corrected.",
+    },
+    status.HTTP_504_GATEWAY_TIMEOUT: {
+        "model": ErrorResponse,
+        "description": "The LLM provider did not answer in time.",
     },
 }
 
 
 @router.post(
     "/extract",
-    status_code=status.HTTP_201_CREATED,
     summary="Extract the clauses of a contract",
     responses=_UPLOAD_ERRORS,
 )
@@ -42,11 +51,17 @@ async def extract(
     file: Annotated[UploadFile, File(description="The contract, as a PDF file.")],
     settings: SettingsDependency,
     parsers: ParserFactoryDependency,
-) -> None:
+    llm: LLMProviderDependency,
+) -> ExtractionDraftResponse:
     """Upload one contract as multipart form data, in a field named `file`.
 
     The file is checked before anything else happens: its size, that it is not empty,
-    and that its content is a PDF. It is then parsed into numbered lines.
+    and that its content is a PDF. It is then parsed into numbered lines, the LLM is
+    asked where the clauses start, and its answer is corrected against the document.
+
+    For now the response says where each part starts. The clause text and the stored
+    result follow in a later change, and with them the `201` status.
     """
     source = await read_upload(file, max_bytes=settings.max_upload_bytes)
-    await extract_document(source, parsers)
+    draft = await extract_document(source, parsers, llm)
+    return ExtractionDraftResponse.model_validate(draft)

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from app.extraction.file_types import FileType
+from app.extraction.labels import ClauseType, ContractType
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,62 @@ class ExtractionWarning:
 
     code: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClauseStart:
+    """Where one part of the contract begins. It runs until the next start."""
+
+    line: int
+    type: ClauseType
+    # As written at the start of the line: "5.1", "(a)", "ARTICLE 5".
+    number: str | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Party:
+    # None when the contract leaves the name blank; the party is then known by its role.
+    name: str | None = None
+    # The short name the contract defines for the party, such as "Customer".
+    role: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContractFacts:
+    """Facts about the contract as a whole. Any of them can be missing."""
+
+    title: str | None = None
+    contract_type: ContractType | None = None
+    # As written in the contract, for example "March 1, 2021".
+    effective_date: str | None = None
+    parties: tuple[Party, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    """Which model answered, with which prompt, and what it cost."""
+
+    provider: str
+    model: str
+    prompt_version: str
+    input_tokens: int
+    output_tokens: int
+    duration_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionDraft:
+    """Where the pipeline stands so far: the clause starts, checked against the document.
+
+    Cutting the text of each clause out of the document and storing the result are
+    the steps that follow.
+    """
+
+    starts: tuple[ClauseStart, ...]
+    facts: ContractFacts
+    warnings: tuple[ExtractionWarning, ...]
+    llm: LLMUsage
 
 
 @dataclass(frozen=True, slots=True)

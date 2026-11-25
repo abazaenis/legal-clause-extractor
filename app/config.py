@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     # Passed to the provider as it is. Unset means the provider's default.
     llm_reasoning_effort: str | None = None
     # Upper limit for one answer, in tokens. An answer that hits it is treated as invalid.
-    llm_max_output_tokens: int = Field(default=32_000, gt=0)
+    # The model's reasoning counts towards it: the 176-page sample used 24,000 at low effort.
+    llm_max_output_tokens: int = Field(default=128_000, gt=0)
     # For one attempt, in seconds. The SDK retries on top of this.
     llm_timeout_seconds: float = Field(default=300, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)

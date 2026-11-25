@@ -85,13 +85,6 @@ class LLMInvalidResponseError(AppError):
     code = "llm_invalid_response"
 
 
-class NotImplementedYetError(AppError):
-    """A step of the pipeline that has not been built yet."""
-
-    status_code = 501
-    code = "not_implemented"
-
-
 class ConfigurationError(Exception):
     """The application is configured wrongly and cannot start.
 

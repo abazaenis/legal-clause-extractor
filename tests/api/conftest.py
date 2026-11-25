@@ -6,8 +6,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from app.api.dependencies import get_llm_provider
 from app.config import Settings
 from app.main import create_app
+from tests.fakes import FakeLLMProvider
 
 
 @pytest.fixture
@@ -20,8 +22,16 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def app(settings: Settings) -> FastAPI:
-    return create_app(settings)
+def llm() -> FakeLLMProvider:
+    """The LLM the application under test talks to. No test reaches a real provider."""
+    return FakeLLMProvider()
+
+
+@pytest.fixture
+def app(settings: Settings, llm: FakeLLMProvider) -> FastAPI:
+    app = create_app(settings)
+    app.dependency_overrides[get_llm_provider] = lambda: llm
+    return app
 
 
 @pytest.fixture
