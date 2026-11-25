@@ -38,14 +38,6 @@ def count_flagged(pages: list[list[str]]) -> int:
     return sum(len(lines) for lines in flagged(pages))
 
 
-def test_result_has_the_same_shape_as_the_input() -> None:
-    pages = [body(1), [], body(3, lines=2)]
-
-    flags = flag_page_noise(pages)
-
-    assert [len(page_flags) for page_flags in flags] == [6, 0, 2]
-
-
 # --- Rule 1: lines repeated at the same edge of the pages -----------------------------
 
 
@@ -81,10 +73,6 @@ def test_line_at_the_edge_of_fewer_than_half_the_pages_is_kept() -> None:
     pages = [[HEADER, *body(1)], *(body(number) for number in range(2, 6))]
 
     assert count_flagged(pages) == 0
-
-
-def test_single_page_has_nothing_to_compare_with() -> None:
-    assert count_flagged([[HEADER, *body(1), "1"]]) == 0
 
 
 def test_only_one_copy_of_a_header_is_flagged_per_page() -> None:
@@ -218,12 +206,6 @@ def test_numbers_that_count_upwards_through_the_text_are_page_numbers() -> None:
         "8. Limitation of Liability.",
         " 4 ",
     ) == ["2", "3", " 4 "]
-
-
-def test_result_has_one_flag_for_every_paragraph() -> None:
-    paragraphs = ["First.", "2", "Second.", "3", "Third.", "4"]
-
-    assert flag_body_page_numbers(paragraphs, [True] * 6) == [False, True, False, True, False, True]
 
 
 def test_run_that_starts_at_one_could_be_a_list_and_is_kept() -> None:

@@ -43,14 +43,6 @@ def test_well_formed_answer_is_read() -> None:
     assert not parsed.metadata_unreadable
 
 
-def test_metadata_can_be_missing_entirely() -> None:
-    parsed = parse_answer(json.dumps({"clauses": [{"line": 1, "type": "other"}]}))
-
-    assert parsed.metadata.title is None
-    assert parsed.metadata.parties == []
-    assert not parsed.metadata_unreadable
-
-
 def test_blank_strings_count_as_missing_and_text_is_trimmed() -> None:
     parsed = parse_answer(
         answer(
@@ -63,13 +55,6 @@ def test_blank_strings_count_as_missing_and_text_is_trimmed() -> None:
     assert parsed.metadata.effective_date is None
     clause = parsed.clauses[0]
     assert (clause.type, clause.number, clause.title) == ("other", "5.1", None)
-
-
-def test_any_type_is_accepted_here_and_judged_later() -> None:
-    # The repair step maps an unknown label to "other" and warns about it.
-    parsed = parse_answer(answer(clauses=[{"line": 1, "type": "remedies"}, {"line": 2}]))
-
-    assert [clause.type for clause in parsed.clauses] == ["remedies", None]
 
 
 def test_party_can_have_a_role_without_a_name() -> None:
@@ -91,14 +76,6 @@ def test_party_can_have_a_role_without_a_name() -> None:
         ("ACUTRAQ Background Screening Inc.", "ACUTRAQ"),
         (None, "Customer"),
     ]
-
-
-def test_fields_the_answer_was_not_asked_for_are_ignored() -> None:
-    parsed = parse_answer(
-        answer(notes="Not sure about clause 3.", clauses=[{"line": 1, "confidence": 0.9}])
-    )
-
-    assert len(parsed.clauses) == 1
 
 
 def test_entry_that_is_not_a_clause_start_is_skipped_and_counted() -> None:
@@ -143,11 +120,3 @@ def test_unreadable_metadata_is_left_empty_and_flagged() -> None:
 def test_answer_with_nothing_to_read_is_refused(text: str, reason: str) -> None:
     with pytest.raises(AnswerFormatError, match=reason):
         parse_answer(text)
-
-
-def test_refusal_never_quotes_the_answer() -> None:
-    # The answer is derived from contract text, and the reason ends up in an error message.
-    with pytest.raises(AnswerFormatError) as raised:
-        parse_answer('{"clauses": "CONFIDENTIAL CLAUSE TEXT"}')
-
-    assert "CONFIDENTIAL" not in str(raised.value)

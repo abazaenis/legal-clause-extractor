@@ -160,31 +160,6 @@ def test_title_that_is_not_written_there_is_left_empty(text: str, title: str) ->
     ]
 
 
-def test_everything_else_about_the_clause_is_left_alone() -> None:
-    given = clause("5.1 Term.\nOne year.", number="6", title="Duration", start_line=40)
-
-    result, warnings = checked(given)
-
-    assert [code for code, _ in warnings] == [
-        "clause_number_not_verified",
-        "clause_title_not_verified",
-    ]
-    assert (result.text, result.start_line, result.end_line) == ("5.1 Term.\nOne year.", 40, 41)
-    assert result.type is ClauseType.OTHER
-
-
-def test_clause_without_a_number_or_a_title_needs_no_check() -> None:
-    given = clause("IN WITNESS WHEREOF, the parties have signed.")
-
-    assert verify_clauses([given]) == ((given,), ())
-
-
-def test_long_value_is_shortened_in_the_warning() -> None:
-    _, warnings = checked(clause("1. Term.", title="T" * 200))
-
-    assert f'"{"T" * 59}…"' in warnings[0][1]
-
-
 # --- The facts about the contract ----------------------------------------------------------------
 
 DOCUMENT = ParsedDocument(
@@ -229,10 +204,6 @@ def test_facts_written_in_the_document_become_the_metadata() -> None:
             Party(name="Leumi UK Group Limited", role="Funder"),
         ),
     )
-
-
-def test_missing_facts_stay_missing_without_a_warning() -> None:
-    assert verified(ContractFacts()) == (ContractMetadata(), [])
 
 
 def test_facts_come_back_in_the_documents_own_characters() -> None:

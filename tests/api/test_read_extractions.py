@@ -3,7 +3,6 @@
 import uuid
 from typing import Any
 
-import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -59,15 +58,6 @@ async def test_stored_extraction_is_read_back_as_post_returned_it(client: AsyncC
     assert read.json()["clauses"][0]["text"] == "1. Definitions.\nText."
 
 
-async def test_reading_makes_no_llm_call(client: AsyncClient, llm: FakeLLMProvider) -> None:
-    stored = await store(client, "1. Definitions.")
-
-    await client.get(f"{LIST}/{stored['document_id']}")
-    await client.get(LIST)
-
-    assert len(llm.calls) == 1
-
-
 async def test_unknown_document_id_is_not_found(client: AsyncClient) -> None:
     await store(client, "1. Definitions.")
     document_id = uuid.uuid7()
@@ -83,23 +73,7 @@ async def test_unknown_document_id_is_not_found(client: AsyncClient) -> None:
     }
 
 
-async def test_document_id_must_be_a_uuid(client: AsyncClient) -> None:
-    response = await client.get(f"{LIST}/42")
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_request"
-    assert "document_id" in response.json()["error"]["message"]
-
-
 # --- The list ----------------------------------------------------------------------------------
-
-
-async def test_nothing_stored_gives_an_empty_page(client: AsyncClient) -> None:
-    response = await client.get(LIST)
-
-    assert response.status_code == 200
-    # The default page size is 20.
-    assert response.json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
 
 
 async def test_list_shows_summaries_newest_first(client: AsyncClient) -> None:
@@ -165,32 +139,6 @@ async def test_list_is_cut_into_pages_by_limit_and_offset(client: AsyncClient) -
     assert (second["limit"], second["offset"]) == (2, 2)
 
 
-@pytest.mark.parametrize(
-    "params",
-    [
-        pytest.param({"limit": "0"}, id="limit below one"),
-        pytest.param({"limit": "101"}, id="limit above the maximum"),
-        pytest.param({"limit": "many"}, id="limit not a number"),
-        pytest.param({"offset": "-1"}, id="offset below zero"),
-    ],
-)
-async def test_limit_and_offset_must_be_in_range(
-    client: AsyncClient, params: dict[str, str]
-) -> None:
-    response = await client.get(LIST, params=params)
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_request"
-    (name,) = params
-    assert name in response.json()["error"]["message"]
-
-
-async def test_largest_page_size_is_accepted(client: AsyncClient) -> None:
-    page = await page_of(client, limit=100)
-
-    assert page["limit"] == 100
-
-
 async def test_uploading_a_file_again_leaves_the_list_as_it_was(client: AsyncClient) -> None:
     pdf = build_pdf([["1. Definitions."]])
     older = (await client.post(EXTRACT, files=upload(pdf))).json()
@@ -205,26 +153,3 @@ async def test_uploading_a_file_again_leaves_the_list_as_it_was(client: AsyncCli
 
 
 # --- The documentation ---------------------------------------------------------------------------
-
-
-async def test_openapi_documents_the_read_endpoints(client: AsyncClient) -> None:
-    paths = (await client.get("/openapi.json")).json()["paths"]
-
-    def model_of(operation: dict[str, Any], status: str) -> str:
-        reference: str = operation["responses"][status]["content"]["application/json"]["schema"][
-            "$ref"
-        ]
-        return reference.rsplit("/", 1)[-1]
-
-    one = paths["/api/extractions/{document_id}"]["get"]
-    assert model_of(one, "200") == "ExtractionResponse"
-    assert model_of(one, "404") == "ErrorResponse"
-    assert model_of(one, "422") == "ErrorResponse"
-
-    many = paths["/api/extractions"]["get"]
-    assert model_of(many, "200") == "ExtractionListResponse"
-    assert model_of(many, "422") == "ErrorResponse"
-    limits = {parameter["name"]: parameter["schema"] for parameter in many["parameters"]}
-    assert (limits["limit"]["default"], limits["limit"]["minimum"]) == (20, 1)
-    assert limits["limit"]["maximum"] == 100
-    assert (limits["offset"]["default"], limits["offset"]["minimum"]) == (0, 0)

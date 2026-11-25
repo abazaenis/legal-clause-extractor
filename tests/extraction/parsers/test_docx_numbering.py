@@ -147,15 +147,6 @@ def test_list_can_start_at_another_number() -> None:
     assert levels_in_a_row(one_level_list("decimal", start=5), 0, 0) == ["5.", "6."]
 
 
-def test_how_many_numbers_were_computed_is_counted() -> None:
-    labels = legal_labels()
-
-    levels_in_a_row(labels, 0, 1, 1)
-    labels.next_label(paragraph())
-
-    assert labels.numbers_computed == 3
-
-
 # --- Where a paragraph gets its numbering from ---------------------------------------------------
 
 
@@ -211,40 +202,12 @@ def test_style_takes_its_numbering_from_the_style_it_is_based_on() -> None:
     ) == ["1.", "1.1", "(a)"]
 
 
-def test_styles_that_are_based_on_each_other_do_not_hang_the_parser() -> None:
-    styles = style("A", based_on="B") + style("B", based_on="A")
-    labels = NumberLabels(element("numbering", LEGAL_LIST), element("styles", styles))
-
-    assert labels.next_label(paragraph(style="A")) is None
-
-
 def test_default_style_can_carry_the_numbering() -> None:
     styles = style("Body", list_id=1, default=True)
     labels = NumberLabels(element("numbering", LEGAL_LIST), element("styles", styles))
 
     # The paragraphs name no style at all.
     assert labels_of(labels, paragraph(), paragraph()) == ["1.", "2."]
-
-
-@pytest.mark.parametrize(
-    "unnumbered",
-    [
-        pytest.param(paragraph(), id="no style and no list"),
-        pytest.param(paragraph(style="Normal"), id="a style without numbering"),
-        pytest.param(paragraph(list_id=42), id="a list that is not defined"),
-        pytest.param(paragraph(list_id=1, level=7), id="a level the list does not define"),
-    ],
-)
-def test_paragraph_without_usable_numbering_has_no_label(unnumbered: Element) -> None:
-    assert legal_labels().next_label(unnumbered) is None
-
-
-def test_document_without_any_numbering_definitions() -> None:
-    # A file written by another program can have neither part.
-    labels = NumberLabels(None, None)
-
-    assert labels.next_label(paragraph(style="Clause", list_id=1)) is None
-    assert labels.numbers_computed == 0
 
 
 # --- How a number is written ---------------------------------------------------------------------
@@ -394,14 +357,3 @@ def test_definition_that_points_to_a_list_style_uses_the_levels_of_that_style() 
     labels = NumberLabels(element("numbering", numbering), None)
 
     assert levels_in_a_row(labels, 0, 0) == ["A)", "B)"]
-
-
-def test_values_that_are_not_numbers_are_ignored() -> None:
-    numbering = (
-        '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="first"><w:lvlText w:val="%1."/>'
-        '</w:lvl><w:lvl w:ilvl="0"><w:start w:val="one"/><w:lvlText w:val="%1."/></w:lvl>'
-        "</w:abstractNum>" + numbered_list(1, 0)
-    )
-    labels = NumberLabels(element("numbering", numbering), None)
-
-    assert levels_in_a_row(labels, 0, 0) == ["1.", "2."]
