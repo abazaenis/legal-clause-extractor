@@ -8,6 +8,7 @@ dependencies = [
     "aiosqlite>=0.22",
     "alembic>=1.20",
     "fastapi>=0.165.0",
+    "openai>=3.59.0",
     "pdfplumber>=0.11.11",
     "pydantic-settings>=2.16",
     "python-multipart>=0.0.34",
@@ -39,6 +40,11 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# The tests quote contract text as a PDF writes it, curly apostrophes and long dashes
+# included. RUF001 would flag each of them as a likely typo.
+"tests/**" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.14"

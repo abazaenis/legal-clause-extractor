@@ -3,8 +3,16 @@
 import io
 from collections.abc import Callable, Sequence
 
+from fastapi import FastAPI
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+
+from app.config import Settings
+from tests.fakes import FakeLLMProvider
+
+# What the `build_app` fixture of the API tests returns: a function that builds an
+# application with these settings, talking to this fake LLM and the test database.
+AppBuilder = Callable[[Settings, FakeLLMProvider], FastAPI]
 
 
 def draw_pdf(draw: Callable[[canvas.Canvas], None]) -> bytes:

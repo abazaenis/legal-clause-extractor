@@ -13,12 +13,12 @@ flowchart TD
     known -->|"no"| parse["The parser for the file type returns numbered lines<br/>PDF: pdfplumber in a worker thread, with page headers,<br/>footers and page numbers flagged"]
     parse -->|"encrypted, damaged, too long or no text"| unreadable["422"]
     parse --> llm["One LLM call:<br/>returns clause start lines, labels and metadata"]
-    llm --> valid{"Is the answer<br/>structurally valid?"}
-    valid -->|"no, first time"| llm
-    valid -->|"no, second time"| fail["502"]
-    valid -->|"yes"| verify["Verify every returned string against the source<br/>unverified values become null plus a warning"]
-    verify --> cut["Cut clause text between start lines"]
-    cut --> store[("SQLite: extractions and clauses,<br/>written in one transaction")]
+    llm -->|"empty or not valid JSON"| fail["502"]
+    llm --> repair["Repair the answer in code:<br/>one warning for every fix, no second LLM call"]
+    repair -->|"more than 10% of the clause starts needed fixing"| fail
+    repair --> cut["Cut the clause text out of the document,<br/>between the start lines"]
+    cut --> verify["Check every string the model returned against that text:<br/>a value that is not written there becomes null plus a warning"]
+    verify --> store[("SQLite: extractions and clauses,<br/>written in one transaction")]
     store --> created["201 with the full extraction"]
     reader(["Client"]) -->|"GET /api/extractions and GET /api/extractions/{document_id}"| store
 ```
@@ -34,22 +34,154 @@ The LLM never writes contract text. Code parses the document into numbered lines
 - **One call per contract, one structured answer.** The prompt is a versioned file; its version and the model are stored with every extraction.
 - **The model returns where each clause starts**, not a range. A clause runs until the next start, so clauses cannot overlap, leave gaps or lose text. The worst failure is two clauses merged, with every word still present.
 - **Every provision that starts on its own line is a clause**, at any depth, labelled with a type from a closed list. The result is one flat list with no parent-child structure. Where a contract is hierarchical, the clause number (for example `18.3.11`) shows it.
-- **Structural errors fail loudly.** If a line number does not exist or the order is wrong, the model is asked once more with the error. After that the request fails with `502`; there are no partial results.
-- **Every string the model returns is checked against the source.** Clause numbers and titles must appear in the clause's first line, and metadata values must appear in the document. A value that fails the check becomes null and is reported in `warnings`.
-- **Dates are parsed by code** from the text as written in the contract.
+- **Clause types are best-effort labels.** The type is the model's reading of what a provision is about. A borderline clause can get a different label on another run, and a label outside the list becomes `other` with a warning. Nothing else depends on the label: the boundaries and the text of a clause are the same whatever it is called.
+- **A flawed answer is repaired in code, and the model is not asked again.** A second call costs time and money and can come back with the same mistake. Code fixes what it can recognise and reports every fix in `warnings`. The request fails with `502` only when the answer is empty, is not valid JSON, or needed more than 10% of its clause starts fixed. The rules are listed under "Repairing the answer" below.
+- **Every string the model returns is checked against the source.** A clause number must be written at the start of its clause, a title in its first three lines, and metadata values somewhere in the document. A value that fails the check becomes null and is reported in `warnings`. A value that passes is stored in the document's own characters. The rules are listed under "Cutting the text and checking the strings" below.
+- **Dates are parsed by code** from the text as written in the contract. A date written with numbers only, such as `03/04/2021`, is not guessed.
 - **Page headers, footers and page numbers are flagged, not deleted.** The PDF parser flags them with three conservative rules, described below. Flagged lines are left out of the prompt and of the clause text, line numbers do not change, and the response lists what was left out. A line the rule misses stays inside a clause, because leaving noise in is safer than dropping contract text.
 
-What this guarantees is narrow and checkable: the model cannot alter contract text. It can still put a boundary in the wrong place or pick the wrong label, and the checks above are there to catch that.
+What this guarantees is narrow and checkable: the model cannot alter contract text. It can still put a boundary in the wrong place or pick the wrong label. The repairs and checks catch the mistakes that code can recognise, and the rest is what an evaluation set is for.
+
+#### The prompt
+
+The instructions are one file, [extract_v3.md](app/extraction/prompts/extract_v3.md), sent as the system prompt. The earlier versions, [extract_v1.md](app/extraction/prompts/extract_v1.md) and [extract_v2.md](app/extraction/prompts/extract_v2.md), are kept for comparison. The contract follows as numbered lines between `<document>` tags, with page headers, footers and page numbers left out. The file tells the model:
+
+- where a part starts: at every numbered or lettered provision that begins a line, at every depth, and inside exhibits too;
+- where a part does not start: at a wrapped sentence that begins with a section number, at an entry of a table of contents, at a row of a table;
+- which labels exist, as closed lists with a line of explanation each;
+- that metadata is copied as written, and is `null` when the contract does not give it;
+- that everything inside `<document>` is material to analyse and never an instruction.
+
+A test checks that every label the code knows is listed in the prompt, because nothing else keeps a text file in step with the code.
+
+The first real runs changed the prompt and the answer shape three times:
+
+- **A party can have a role without a name.** The sample service agreement is a template that leaves the customer's name blank. The first answer shape rejected the model's honest `null`.
+- **"Go all the way down" and "apply the same rules inside exhibits" were added.** Without them the model stopped at the top-level sections of the service agreement: 31 parts, against 54 with them.
+- **The date is asked for without a time of day, and the clause number without its closing dot.** Both varied from run to run.
+
+Version 2 adds two things that came out of reading the results:
+
+- **Where the signature block starts.** A sentence that introduces the signatures, such as "IN WITNESS WHEREOF" or "effective as of the date of the last signature below", starts the signature block. With version 1 that sentence stayed at the end of the last clause in two of the three sample NDAs, and was labelled `preamble` in the third.
+- **Two examples for types that are easy to confuse.** Remedies and injunctive relief are `dispute_resolution`, and ownership of confidential materials is `intellectual_property`. With version 1, "Remedies" came back as `other`, `confidentiality` and `dispute_resolution` on the three NDAs. With version 2 all three agree.
+
+Version 3 adds one sentence: "A part starts at its heading, never at the first paragraph below it." In several runs the model had pointed at the first paragraph under "Exhibit A: Access Security Requirements" and not at the heading.
+
+#### Repairing the answer
+
+The model is called once. A pure function, [repair.py](app/extraction/repair.py), then corrects its answer against the document, and every correction adds one entry to `warnings` in the response.
+
+| What is wrong in the answer | What code does | Warning code |
+|---|---|---|
+| A start on a line the document does not have | Drops it | `clause_start_on_missing_line` |
+| A start on a page header, footer or page number | Drops it | `clause_start_on_page_noise` |
+| An entry without a usable line number | Leaves it out | `clause_start_unreadable` |
+| A type that is not in the list | Labels it `other` | `unknown_clause_type` |
+| Starts out of document order | Sorts them | `clause_starts_reordered` |
+| Two starts on the same line | Keeps the first | `clause_start_repeated` |
+| The title is on the line above the start, and that line is not a start itself | Moves the start up one line | `clause_start_moved_to_title` |
+| The line above the start is the heading of an attachment, such as `Exhibit A: ...` or `APPENDIX B`, and is not a start itself | Moves the start up one line | `clause_start_moved_to_heading` |
+| The number is also the number of another start, and the line above ends in the middle of a sentence | Drops the start | `clause_start_in_mid_sentence` |
+| The first start is not the first line | Adds a preamble part from the first line | `preamble_added` |
+
+Three of these rules come from mistakes the model made on the sample contracts:
+
+- **A start under its heading.** On the service agreement the model sometimes points at line 363, the first line of the text under "Exhibit A: Access Security Requirements" on line 362. The heading then ends up in the part before it. Two rules move such a start up. One applies when the model gave a title and the line above holds it exactly as given. The other needs no title: it applies when the line above is the heading of an attachment. That takes two things. The line is Exhibit, Appendix, Schedule or Annex, then an identifier, then a colon or the end of the line. And the line before it ends a sentence. Beginning with the word is not enough: line 654 of the long agreement begins with "Appendix C of this Agreement" and is the end of the sentence in clause 4.1, and with the looser rule the start of clause 4.2 below it was moved up. A start that is on such a heading itself is left alone, because the line above it can be the last row of a list of exhibits.
+- **A reference wrapped onto a new line.** In the long agreement a sentence ends with "as set forth in Article", and the next line begins with "2.3.1.2.3. During the suspension period". The model took that line for clause 2.3.1.2.3, which starts on line 559. A line ends in the middle of a sentence when its last word cannot end one: `Article`, `Section`, `the`, `of`, `pursuant` and similar words. A missing full stop is not enough, because a heading has none either, and real clauses that follow a heading would be dropped.
+
+**When the answer is refused.** The request fails with `502` when the answer is empty, is not valid JSON, or needed more than 10% of its clause starts fixed. An answer that needs that much fixing cannot be trusted in the places code did not check. One fix is always allowed, so that a nine-clause NDA is not refused over a single correction.
+
+An unknown contract type becomes `other`, and metadata that cannot be read is left empty. Both are reported, and neither counts towards the 10%. The closing dot of a clause number (`5.1.`) is trimmed without a warning, because it is the same number.
+
+Replaying the saved answers of nine real runs through these rules changed one thing: the start on line 535 of the long agreement was dropped, in the two runs that had it. Later runs through the finished endpoint showed the title rule at work: the model put the start of Exhibit A on line 363 twice, and both times it was moved to line 362.
+
+#### Cutting the text and checking the strings
+
+After the repair, code cuts the text of each clause out of the document ([clauses.py](app/extraction/clauses.py)): the lines from its start to the line before the next start, joined by line breaks, without the page noise. A test cuts every sample contract at arbitrary lines and checks that the clauses add up to the document, line for line.
+
+Then every string the model returned is looked up in the place it claims to come from ([verification.py](app/extraction/verification.py)):
+
+| Value | Where it must be written | If it is not |
+|---|---|---|
+| Clause number | At the start of the clause's first line, or right after its first word: `X-1` in `Exhibit X-1:` | `null` and `clause_number_not_verified` |
+| Clause title | In the first three lines of the clause | `null` and `clause_title_not_verified` |
+| Contract title | Anywhere in the document | `null` and `title_not_verified` |
+| Party name, party role | Anywhere in the document | `null` and `party_not_verified` |
+| Effective date | Anywhere in the document, in a form code can read as a date | `null` and `effective_date_not_verified` or `effective_date_not_parsed` |
+
+- **Whitespace and the style of quotes and dashes may differ. Nothing else may.** A value can wrap onto the next line, and the model tends to turn curly quotes into straight ones. A value that is found is stored in the document's own characters, so what the API returns is always a copy of the source.
+- **A number must be the whole number.** `1` does not pass for a line that starts with `11.` or with `1.2`.
+- **Dates with numbers only are not guessed.** `03/04/2021` is 4 March in one country and 3 April in another. Dates with a month name and ISO dates are read. Anything else is left empty, with a warning that quotes the text.
+- **These checks do not count towards the 10%.** They are about labels. The boundaries and the text of the clauses do not depend on them.
+
+On 19 saved answers to the sample contracts, all 1,674 numbers, 1,419 titles and 126 metadata values passed. The first runs through the finished endpoint then failed three values, and each of them was real text: `X-1` and `X-2` for lines that start with `Exhibit X-1:` and `Exhibit X-2:`, and a title with straight quotes where the document has curly ones. The rule about the first word and the rule about quotes come from those three.
+
+#### Measured on the sample contracts
+
+One call per contract, `deepseek-flash`, reasoning effort `none`, through the running API, with version 1 of the prompt:
+
+| Sample | Pages | Input tokens | Output tokens | LLM time | Parts found |
+|---|---|---|---|---|---|
+| NDA | 3 | 3,214 | 343 | 4.0 s | 11 |
+| Service agreement | 23 | 16,241 | 1,448 | 6.3 s | 55 |
+| Agreement | 176 | 52,304 | 9,011 | 23.5 s | 277 |
+
+The output stays small because the model returns line numbers and labels, not text. That is what lets a 176-page contract go through a single call.
+
+For the 176-page agreement I compared one answer with every line that looks like a numbered heading. The model started a part at each of them except five, and those five are sentences that wrap onto a line beginning with a section number, such as "18.3.9. For any period of time".
+
+On the NDA and on the long agreement, more reasoning did not change where the clauses start:
+
+| Reasoning effort | NDA: time | NDA: output tokens | 176 pages: time | 176 pages: output tokens |
+|---|---|---|---|---|
+| `none` | 2.3 s | 346 | 19.9 s | 6,948 |
+| `low` | 13.5 s | 2,827 | 85.4 s | 24,182 |
+| `high` | 23.5 s | 5,329 | not run | not run |
+| `max` | 86.3 s | 10,906 | not run | not run |
+
+All four levels found the nine clauses of the NDA on the same lines. On the 176-page agreement `none` found 283 parts and `low` found 282.
+
+Two things do vary from run to run. The label of a borderline clause is one: "Remedies" came back as three different types. The count on the long agreement is the other: it moved between 277 and 283 across three runs at `none`.
+
+The same contracts with version 2 of the prompt, at `none` and at `high`, the value in `.env.example`:
+
+| Sample | `none`: time | `none`: output tokens | `none`: parts | `high`: time | `high`: output tokens | `high`: parts |
+|---|---|---|---|---|---|---|
+| NDA | 2.6 s | 426 | 11 | 12.9 s | 2,413 | 11 |
+| Service agreement | 5.8 s | 1,861 | 53 | 150.1 s | 33,041 | 59 |
+| Agreement, 176 pages | 22.7 s | 9,173 | 283 | 164.0 s | 43,960 | 280 |
+
+- No answer needed a fix, in any of these runs.
+- The signature block starts at the sentence that introduces it, in all five sample PDFs and at both levels.
+- On the NDA the two levels agree on every line and every type.
+- On the service agreement `high` found six more parts and missed none. One of them is Exhibit A, which `none` left inside the table of exhibits. Code cannot repair a start the model never returns.
+- On the long agreement the two differ by three starts without a number, and by the type of 11 of the 280 parts they share.
+
+At `high` nearly all of the output is reasoning, and that is where the time goes: two and a half minutes for the service agreement, against six seconds at `none`.
 
 ### LLM provider and model
 
 - **The provider is configuration, not code.** The LLM sits behind one small interface. The provider name, base URL, API key, model and reasoning effort come from environment variables.
-- **Four small pieces make that work.** The pipeline depends on one interface (Strategy). Each provider is an adapter that translates the interface to a vendor SDK and maps its errors to ours (Adapter). A factory builds the adapter named in the environment and fails at startup on an unknown name (Factory). FastAPI injects it into the extraction service, which is also how the tests swap in a fake (dependency injection).
+- **Four small pieces make that work.** The pipeline depends on one interface (Strategy). Each provider is an adapter that translates the interface to a vendor SDK and maps its errors to ours (Adapter). A factory builds the adapter named in the environment, and stops the server at startup on an unknown name or a missing API key (Factory). FastAPI injects it into the extraction service, which is also how the tests swap in a fake (dependency injection).
 - **Adapters know nothing about contracts.** They send text and return text plus token usage. The prompt, the parsing of the answer and every check live in the extraction code, so adding a provider is one small class and one line in the factory.
 - **The default is DeepSeek**, called through its OpenAI-compatible API with the official `openai` SDK. Any other OpenAI-compatible provider is a change of environment variables; a provider with a different API is one new class behind the same interface.
-- **The answer is requested in JSON mode and validated by this service.** I do not rely on a provider-specific strict-schema feature, so the same checks apply to every provider. An empty or invalid answer is treated like any other structural error: one re-ask, then `502`.
-- **Retries, backoff and timeouts come from the SDK**, configured once, with one overall deadline per request.
+- **The answer is requested in JSON mode and validated by this service.** I do not rely on a provider-specific strict-schema feature, so the same checks and repairs apply to every provider. An answer that is empty or is not valid JSON fails the request with `502`. The model is not asked again.
+- **Retries, backoff and the timeout of one attempt come from the SDK**, configured once.
+- **Prompts and answers are never logged.** They contain contract text. What is logged for each call is the provider, the model, the token counts, the duration and, on failure, the kind of error and its status.
 - **DeepSeek is a development default, chosen for cost.** For real client contracts the provider has to be chosen on its data terms (region, retention, use for training), which is the reason it is configuration.
+
+The settings, all read from the environment or a `.env` file:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_PROVIDER` | `deepseek` | `deepseek`, or `openai_compatible` for any other API with the OpenAI wire format |
+| `LLM_API_KEY` | none | Required. The server does not start without it |
+| `LLM_MODEL` | `deepseek-flash` | The model to ask |
+| `LLM_BASE_URL` | the provider's own | Required for `openai_compatible` |
+| `LLM_REASONING_EFFORT` | the provider's default | Passed to the provider as it is |
+| `LLM_MAX_OUTPUT_TOKENS` | `128000` | An answer that hits the limit is treated as invalid. Reasoning counts towards it |
+| `LLM_TIMEOUT_SECONDS` | `300` | For one attempt |
+| `LLM_MAX_RETRIES` | `2` | Retries after the first attempt, with backoff |
 
 ### Document parsers
 
@@ -116,6 +248,12 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 
 **Flat clauses.** Clauses are stored without a level or a parent. The hierarchy is still visible in each clause's number, and storing it explicitly is on the list of later work.
 
+**Writing a result.** A result is written in one transaction, so a file has its complete result or none. The same holds for an overwrite: if it fails, the stored result stays as it was. The repository opens one short session for the lookup and another for the write, so no database connection is held during the LLM call, which can take minutes. If two requests upload the same new file at the same moment, both run the LLM and the unique hash decides at insert time. The second write finds the row and replaces its result, and both requests get the same id.
+
+**Page noise is stored as a summary.** Each line that was left out is listed once with a count. Lines that differ only in their numbers are counted together, with `#` for the numbers: `Page # of #`, twice. The 528 lines left out of the 176-page sample come to 14 entries.
+
+**`created_at` is the time the stored result was produced.** An overwrite replaces the row as a whole, so it moves `created_at` as well. The id does not change.
+
 **Migrations run with SQLite foreign keys off.** SQLite changes a table by rebuilding it: copy the rows, drop the old table, rename the new one. With foreign keys enforced, dropping `extractions` deletes its rows first, and the cascade silently takes every clause with them. The second migration did exactly that until the migrations got their own engine without the foreign-key setting. A test now runs the migrations over existing rows and checks that they are all still there.
 
 ### API
@@ -125,6 +263,8 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 - **The file type is decided by content.** The first bytes must be a PDF header. The file name and the content type the client declares are ignored.
 - **One resource.** The stored result is read back with `GET /api/extractions/{document_id}`. The list endpoint returns summaries without clause text.
 - **Same file, same id.** A file is identified by the SHA-256 of its bytes, so uploading it again never creates a second result. A repeat upload returns the stored result with `200` and makes no LLM call. `?overwrite=true` runs the extraction again and replaces the stored result, keeping the id.
+- **A stored result and a fresh one are the same response.** Both are built from the stored row, and a test checks that the second upload of a file returns exactly the body of the first. The response groups what belongs together: `file`, `metadata`, `clauses`, `warnings`, `page_noise` and `llm`.
+- **A failed extraction stores nothing.** The next upload of the same file is extracted again.
 - **Clauses are a flat list in document order.** There is no nesting. Where a contract is hierarchical, each clause's `number` shows where it sits.
 - **Pagination data is in the response body** (`items`, `total`, `limit`, `offset`), using limit and offset. It is typed, it appears in the OpenAPI docs for free, and it is hard to miss. `Link` headers would be the alternative.
 - **One small error shape for every failure**: `{"error": {"code": "...", "message": "..."}}`. The status code says where the problem is: `413`, `415` and `422` for the upload, `404` for an unknown id, `502` and `504` for the LLM.
@@ -175,6 +315,7 @@ The fix is to detect columns and table cells from the positions of the words bef
 - **Search and filtering.** Each clause carries a type such as confidentiality, termination or governing law. Filtering a document's clauses by type, and searching across documents by clause type or contract metadata, builds directly on that.
 - **RFC 9457 problem details.** Errors use a small custom shape (`code` and `message`). I would switch to the standard `application/problem+json` format, so clients and gateways can handle errors without knowing this API.
 - **Model and reasoning effort per request.** The provider, model and reasoning effort are set in the environment. I would list the configured models through the API and let a request pick one, together with a reasoning effort, to trade cost and speed against accuracy per document.
+- **Streaming results with Server-Sent Events.** The LLM call is the slow part, and the client waits for the whole response. The LLM's answer can be streamed to the backend, and because it lists the clause starts in document order, a clause is complete as soon as the next start arrives. The backend could push each clause to the client as a server-sent event, so the user watches the contract fill in. The events would be provisional until the whole answer has passed validation, and the stored result would stay the source of truth.
 
 ### Running it in production
 

@@ -1,8 +1,10 @@
 """Plain data types passed between the steps of the extraction pipeline."""
 
 from dataclasses import dataclass, field
+from datetime import date
 
 from app.extraction.file_types import FileType
+from app.extraction.labels import ClauseType, ContractType
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +48,106 @@ class ExtractionWarning:
 
     code: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClauseStart:
+    """Where one part of the contract begins. It runs until the next start."""
+
+    line: int
+    type: ClauseType
+    # As written at the start of the line: "5.1", "(a)", "ARTICLE 5".
+    number: str | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Party:
+    # None when the contract leaves the name blank; the party is then known by its role.
+    name: str | None = None
+    # The short name the contract defines for the party, such as "Customer".
+    role: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContractFacts:
+    """Facts about the contract as the model reported them. Any of them can be missing.
+
+    They are claims until they have been checked against the document. What passes
+    the check becomes the `ContractMetadata`.
+    """
+
+    title: str | None = None
+    contract_type: ContractType | None = None
+    # As written in the contract, for example "March 1, 2021".
+    effective_date: str | None = None
+    parties: tuple[Party, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ContractMetadata:
+    """Facts about the contract that are written in the document."""
+
+    title: str | None = None
+    contract_type: ContractType | None = None
+    # Read by code from the date as the contract writes it.
+    effective_date: date | None = None
+    parties: tuple[Party, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedClause:
+    """One part of the contract, with its text copied from the document."""
+
+    # Zero-based order of the clause within the document.
+    position: int
+    type: ClauseType
+    number: str | None
+    title: str | None
+    # Kept out of the repr so contract content never ends up in a log line or traceback.
+    text: str = field(repr=False)
+    # The first and the last line of the clause, both included.
+    start_line: int
+    end_line: int
+    # None for formats that have no pages.
+    start_page: int | None
+    end_page: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class PageNoise:
+    """Page headers, footers or page numbers that were left out of the clause text."""
+
+    # The line as written, or with `#` for the numbers where the lines differ in them.
+    text: str
+    occurrences: int
+
+
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    """Which model answered, with which prompt, and what it cost."""
+
+    provider: str
+    model: str
+    prompt_version: str
+    input_tokens: int
+    output_tokens: int
+    duration_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    """Everything the pipeline produced for one file, ready to be stored."""
+
+    # None for formats that have no pages.
+    page_count: int | None
+    metadata: ContractMetadata
+    clauses: tuple[ExtractedClause, ...]
+    # In the order of the pipeline: what the parser left out, what was repaired in the
+    # model's answer, what could not be verified.
+    warnings: tuple[ExtractionWarning, ...]
+    page_noise: tuple[PageNoise, ...]
+    llm: LLMUsage
 
 
 @dataclass(frozen=True, slots=True)
