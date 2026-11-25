@@ -250,8 +250,18 @@ def test_count_starts_again_after_a_number_that_does_not_fit() -> None:
 def test_numbers_in_a_table_are_not_counted() -> None:
     assert body_flags("2", "3", "4", in_table=(0, 1, 2)) == []
     # And they do not break the count of the numbers around them.
-    assert body_flags("2", "999", "3", "4", in_table=(1,)) == ["2", "3", "4"]
+    assert body_flags("2", "Text.", "999", "3", "Text.", "4", in_table=(2,)) == ["2", "3", "4"]
 
 
 def test_numbers_inside_a_sentence_are_text() -> None:
     assert body_flags("Clause 2", "3 months", "4.", "Page 5") == []
+
+
+def test_years_are_not_page_numbers() -> None:
+    # They count upwards by one, with text between them, like page numbers would.
+    assert body_flags("Prices are reviewed in", "2026", "and", "2027", "and", "2028") == []
+
+
+def test_numbers_next_to_each_other_are_not_page_numbers() -> None:
+    # A list of figures that lost its table. Every page has text between its numbers.
+    assert body_flags("Quantities:", "5", "6", "7", "8", "End of the list.") == []

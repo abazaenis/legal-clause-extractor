@@ -507,8 +507,9 @@ def test_page_noise_between_the_heading_and_the_start_is_skipped() -> None:
 
 
 def twenty_starts(*bad_lines: int) -> ExtractionAnswer:
-    doc_lines = range(1, 21)
-    return answer(*(start(n, "nonsense" if n in bad_lines else "other") for n in doc_lines))
+    """A start on every line of `TWENTY_LINES`, except that each of `bad_lines` is
+    replaced by a start on a line the document does not have."""
+    return answer(*(start(n + 100 if n in bad_lines else n) for n in range(1, 21)))
 
 
 TWENTY_LINES = document(*(f"{number}. Clause text." for number in range(1, 21)))
@@ -537,13 +538,25 @@ def test_two_fixes_in_a_short_answer_are_too_many() -> None:
         repair_answer(answer(start(1), start(2), start(98), start(99)), TEN_LINES)
 
 
-def test_every_kind_of_fix_counts() -> None:
-    # Unreadable, missing line, unknown type: three fixes in an answer of twenty-one.
+def test_unreadable_entries_count_as_fixes() -> None:
+    # One unreadable entry and two missing lines: three fixes in an answer of twenty-two.
     answer_ = twenty_starts(3).model_copy(update={"unreadable_clauses": 1})
     answer_.clauses.append(start(99))
 
     with pytest.raises(LLMInvalidResponseError, match="3 of its 22 clause starts needed"):
         repair_answer(answer_, TWENTY_LINES)
+
+
+def test_unknown_types_do_not_count_against_the_answer() -> None:
+    # Every boundary is right. Five labels are outside the list: a quarter of the answer.
+    labels = {3: "termination", 6: "fees", 9: "recitals", 12: None, 15: "nonsense"}
+    starts = [start(n, labels.get(n, "other")) for n in range(1, 21)]
+
+    lines, warnings, repaired = repair(answer(*starts), TWENTY_LINES)
+
+    assert lines == list(range(1, 21))
+    assert [code for code, _ in warnings] == ["unknown_clause_type"] * 5
+    assert {repaired.starts[n - 1].type for n in labels} == {ClauseType.OTHER}
 
 
 def test_unreadable_entries_are_reported() -> None:

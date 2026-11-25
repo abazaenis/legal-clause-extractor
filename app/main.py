@@ -1,6 +1,6 @@
 """Application entry point: `uvicorn app.main:app`."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import structlog
@@ -20,7 +20,7 @@ log = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Runs when the server starts and again when it stops.
 
     The LLM provider and the database engine are built here and not in `create_app`,

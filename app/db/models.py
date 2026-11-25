@@ -18,8 +18,8 @@ def _utc_now() -> datetime:
 class Extraction(Base):
     """One file and everything extracted from it.
 
-    A file has exactly one extraction. Processing the same file again replaces the row
-    as a whole and keeps its id; rows are never partially updated.
+    A file has exactly one extraction. It is written once, in one transaction, and never
+    changed afterwards.
     """
 
     __tablename__ = "extractions"

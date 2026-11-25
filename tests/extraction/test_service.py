@@ -236,7 +236,6 @@ def extractions(engine: AsyncEngine) -> ExtractionRepository:
 async def test_new_file_is_extracted_and_stored(extractions: ExtractionRepository) -> None:
     stored = await extract_and_store(
         SOURCE,
-        overwrite=False,
         parsers=parsers(),
         llm=FakeLLMProvider(ANSWER),
         extractions=extractions,
@@ -255,11 +254,11 @@ async def test_file_that_was_extracted_before_costs_no_llm_call(
     parser = RecordingParser()
     llm = FakeLLMProvider(ANSWER)
     first = await extract_and_store(
-        SOURCE, overwrite=False, parsers=parsers(parser), llm=llm, extractions=extractions
+        SOURCE, parsers=parsers(parser), llm=llm, extractions=extractions
     )
 
     again = await extract_and_store(
-        SOURCE, overwrite=False, parsers=parsers(parser), llm=llm, extractions=extractions
+        SOURCE, parsers=parsers(parser), llm=llm, extractions=extractions
     )
 
     assert not again.created
@@ -269,54 +268,15 @@ async def test_file_that_was_extracted_before_costs_no_llm_call(
     assert len(llm.calls) == 1
 
 
-async def test_overwrite_extracts_the_file_again_and_keeps_its_id(
-    extractions: ExtractionRepository,
-) -> None:
-    one_part = {"clauses": [{"line": 2, "type": "other"}]}
-    llm = FakeLLMProvider(ANSWER, one_part)
-    first = await extract_and_store(
-        SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
-    )
-
-    replaced = await extract_and_store(
-        SOURCE, overwrite=True, parsers=parsers(), llm=llm, extractions=extractions
-    )
-
-    assert not replaced.created
-    assert replaced.extraction.id == first.extraction.id
-    assert len(llm.calls) == 2
-    found = await extractions.find_by_sha256(SOURCE.sha256)
-    assert found is not None
-    assert [clause.type for clause in found.clauses] == ["other"]
-
-
-async def test_overwrite_of_a_file_that_was_never_extracted_creates_it(
-    extractions: ExtractionRepository,
-) -> None:
-    stored = await extract_and_store(
-        SOURCE,
-        overwrite=True,
-        parsers=parsers(),
-        llm=FakeLLMProvider(ANSWER),
-        extractions=extractions,
-    )
-
-    assert stored.created
-
-
 async def test_failed_extraction_stores_nothing(extractions: ExtractionRepository) -> None:
     llm = FakeLLMProvider("not JSON", ANSWER)
 
     with pytest.raises(LLMInvalidResponseError):
-        await extract_and_store(
-            SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
-        )
+        await extract_and_store(SOURCE, parsers=parsers(), llm=llm, extractions=extractions)
 
     assert await extractions.find_by_sha256(SOURCE.sha256) is None
     # So the next upload of the same file is extracted, not answered from storage.
-    stored = await extract_and_store(
-        SOURCE, overwrite=False, parsers=parsers(), llm=llm, extractions=extractions
-    )
+    stored = await extract_and_store(SOURCE, parsers=parsers(), llm=llm, extractions=extractions)
     assert stored.created
 
 
@@ -337,14 +297,12 @@ async def test_pipeline_logs_counts_and_codes_and_nothing_of_the_document(
     with capture_logs() as logs:
         stored = await extract_and_store(
             SOURCE,
-            overwrite=False,
             parsers=parsers(),
             llm=FakeLLMProvider(answer),
             extractions=extractions,
         )
         await extract_and_store(
             SOURCE,
-            overwrite=False,
             parsers=parsers(),
             llm=FakeLLMProvider(answer),
             extractions=extractions,

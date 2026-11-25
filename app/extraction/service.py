@@ -25,7 +25,6 @@ log = structlog.get_logger(__name__)
 async def extract_and_store(
     source: SourceFile,
     *,
-    overwrite: bool,
     parsers: ParserFactory,
     llm: LLMProvider,
     extractions: ExtractionRepository,
@@ -33,15 +32,12 @@ async def extract_and_store(
     """Return the stored extraction of a file, running the pipeline only when needed.
 
     A file is identified by the hash of its bytes, and has one stored result. A file
-    that was extracted before costs no LLM call: its stored result is returned. With
-    `overwrite`, the file is extracted again and the new result takes the place of
-    the stored one, under the same id.
+    that was extracted before costs no LLM call: its stored result is returned.
     """
-    if not overwrite:
-        stored = await extractions.find_by_sha256(source.sha256)
-        if stored is not None:
-            log.info("extraction_served_from_storage", document_id=str(stored.id))
-            return StoredExtraction(extraction=stored, created=False)
+    stored = await extractions.find_by_sha256(source.sha256)
+    if stored is not None:
+        log.info("extraction_served_from_storage", document_id=str(stored.id))
+        return StoredExtraction(extraction=stored, created=False)
 
     result = await extract_document(source, parsers, llm)
     saved = await extractions.save(source, result)

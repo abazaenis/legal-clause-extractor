@@ -163,7 +163,9 @@ def _known_clause_type(raw: RawClauseStart, repairs: _Repairs) -> ClauseType:
     if label in ClauseType:
         return ClauseType(label)
     given = f'the unknown type "{shorten(raw.type)}"' if raw.type else "no type"
-    repairs.fix(
+    # Reported, but not counted against the answer: a label is not a boundary, and the
+    # text of the clause is the same whatever it is called.
+    repairs.note(
         "unknown_clause_type",
         f'The clause start on line {raw.line} had {given} and was labelled "other".',
     )

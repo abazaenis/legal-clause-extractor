@@ -191,17 +191,16 @@ async def test_largest_page_size_is_accepted(client: AsyncClient) -> None:
     assert page["limit"] == 100
 
 
-async def test_overwritten_extraction_moves_to_the_top_of_the_list(client: AsyncClient) -> None:
+async def test_uploading_a_file_again_leaves_the_list_as_it_was(client: AsyncClient) -> None:
     pdf = build_pdf([["1. Definitions."]])
     older = (await client.post(EXTRACT, files=upload(pdf))).json()
     newer = await store(client, "1. Term.")
-    assert ids(await page_of(client)) == [newer["document_id"], older["document_id"]]
 
-    await client.post(EXTRACT, files=upload(pdf), params={"overwrite": "true"})
+    await client.post(EXTRACT, files=upload(pdf))
 
-    # Its result is the newest now. Its id is still the same.
+    # The stored result is returned, not stored again: same order, same total.
     page = await page_of(client)
-    assert ids(page) == [older["document_id"], newer["document_id"]]
+    assert ids(page) == [newer["document_id"], older["document_id"]]
     assert page["total"] == 2
 
 
