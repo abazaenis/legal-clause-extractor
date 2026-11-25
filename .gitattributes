@@ -1,0 +1,3 @@
+# Never change line endings in documents: a PDF's byte offsets must stay exact.
+*.pdf binary
+*.docx binary
