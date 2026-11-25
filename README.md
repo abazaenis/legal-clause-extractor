@@ -95,6 +95,8 @@ Duplicate detection would be scoped per customer, so one customer's upload never
 ### API
 
 - **One file per request.** `POST /api/extract` takes a single PDF as multipart form data, runs the extraction synchronously and returns `201` with the full result and a `Location` header.
+- **The upload limit is enforced while the body arrives.** FastAPI reads a whole upload before the endpoint runs, so a size check inside the endpoint comes too late. A small middleware refuses a declared `Content-Length` over the limit before reading anything, and counts a streamed body so that a missing or wrong `Content-Length` cannot get around it.
+- **The file type is decided by content.** The first bytes must be a PDF header. The file name and the content type the client declares are ignored.
 - **One resource.** The stored result is read back with `GET /api/extractions/{document_id}`. The list endpoint returns summaries without clause text.
 - **Same file, same id.** A file is identified by the SHA-256 of its bytes, so uploading it again never creates a second result. A repeat upload returns the stored result with `200` and makes no LLM call. `?overwrite=true` runs the extraction again and replaces the stored result, keeping the id.
 - **Clauses are a flat list in document order.** There is no nesting. Where a contract is hierarchical, each clause's `number` shows where it sits.
