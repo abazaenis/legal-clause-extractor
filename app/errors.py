@@ -26,6 +26,15 @@ class FileTooLargeError(AppError):
         super().__init__(f"The file is larger than the limit of {_readable_size(max_bytes)}.")
 
 
+class UnpackedFileTooLargeError(FileTooLargeError):
+    """A compressed file that is small as uploaded and far too large once it is opened."""
+
+    def __init__(self, max_bytes: int) -> None:
+        AppError.__init__(
+            self, f"The file is larger than {_readable_size(max_bytes)} once it is unpacked."
+        )
+
+
 class UnsupportedFileTypeError(AppError):
     status_code = 415
     code = "unsupported_file_type"
@@ -52,8 +61,13 @@ class TooManyPagesError(AppError):
     status_code = 422
     code = "too_many_pages"
 
-    def __init__(self, page_count: int, max_pages: int) -> None:
-        super().__init__(f"The file has {page_count} pages. The limit is {max_pages}.")
+    def __init__(self, page_count: int, max_pages: int, *, estimated: bool = False) -> None:
+        if estimated:
+            # A format without pages. The count comes from the amount of text.
+            message = f"The document is about {page_count} pages long. The limit is {max_pages}."
+        else:
+            message = f"The file has {page_count} pages. The limit is {max_pages}."
+        super().__init__(message)
 
 
 class NoTextFoundError(AppError):

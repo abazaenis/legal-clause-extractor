@@ -14,9 +14,10 @@ from app.config import Settings
 from app.errors import LLMTimeoutError, LLMUnavailableError
 from app.extraction.prompt import PROMPT_VERSION, system_prompt
 from tests.fakes import FakeLLMProvider
-from tests.helpers import AppBuilder, build_pdf
+from tests.helpers import AppBuilder, build_docx, build_pdf, docx_paragraph, docx_table
 
 URL = "/api/extract"
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 UploadField = dict[str, tuple[str, bytes, str]]
 
 
@@ -224,6 +225,104 @@ async def test_file_exactly_at_the_size_limit_is_accepted(build_app: AppBuilder)
     assert response.status_code == 201
 
 
+# --- A Word document ---------------------------------------------------------------------------
+
+
+async def test_word_document_is_extracted_like_a_pdf_only_without_pages(
+    build_app: AppBuilder, settings: Settings
+) -> None:
+    docx = build_docx(
+        docx_paragraph("SERVICES AGREEMENT")
+        + docx_paragraph("between Acme Ltd (the Supplier) and the Customer.")
+        + docx_paragraph()
+        + docx_paragraph("1. Definitions.")
+        + docx_table(["Notice to Acme:", "1 Main Street"])
+        + docx_paragraph("2. Term.")
+    )
+    llm = FakeLLMProvider(
+        {
+            "metadata": {"title": "SERVICES AGREEMENT", "contract_type": "service_agreement"},
+            "clauses": [
+                {"line": 1, "type": "preamble"},
+                {"line": 3, "type": "definitions", "number": "1", "title": "Definitions"},
+                {"line": 5, "type": "term_and_termination", "number": "2", "title": "Term"},
+            ],
+        }
+    )
+    app = build_app(settings, llm)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(URL, files=upload(docx, "msa.docx", DOCX_MEDIA_TYPE))
+        again = await client.post(URL, files=upload(docx, "msa.docx", DOCX_MEDIA_TYPE))
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["file"] == {
+        "filename": "msa.docx",
+        "content_type": DOCX_MEDIA_TYPE,
+        "size_bytes": len(docx),
+        # A Word document has no pages.
+        "page_count": None,
+        "sha256": hashlib.sha256(docx).hexdigest(),
+    }
+    assert [
+        (clause["number"], clause["text"], clause["start_line"], clause["end_line"])
+        for clause in body["clauses"]
+    ] == [
+        (None, "SERVICES AGREEMENT\nbetween Acme Ltd (the Supplier) and the Customer.", 1, 2),
+        # A paragraph is a line, and so is the row of a table.
+        ("1", "1. Definitions.\nNotice to Acme: | 1 Main Street", 3, 4),
+        ("2", "2. Term.", 5, 5),
+    ]
+    assert all(
+        clause["start_page"] is None and clause["end_page"] is None for clause in body["clauses"]
+    )
+    assert (body["warnings"], body["page_noise"]) == ([], [])
+    # The LLM saw the paragraphs as numbered lines, with no page markers.
+    assert llm.calls[0]["user"] == (
+        "<document>\n"
+        "1| SERVICES AGREEMENT\n"
+        "2| between Acme Ltd (the Supplier) and the Customer.\n"
+        "3| 1. Definitions.\n"
+        "4| Notice to Acme: | 1 Main Street\n"
+        "5| 2. Term.\n"
+        "</document>"
+    )
+    # And the same file again is answered from storage, like a PDF.
+    assert again.status_code == 200
+    assert again.json() == body
+    assert len(llm.calls) == 1
+
+
+async def test_word_document_that_cannot_be_read_is_rejected(client: AsyncClient) -> None:
+    damaged = build_docx("", parts={"word/document.xml": b"<w:document"})
+
+    response = await client.post(URL, files=upload(damaged, "msa.docx", DOCX_MEDIA_TYPE))
+
+    assert response.status_code == 422
+    assert error_code(response) == "file_unreadable"
+
+
+async def test_word_document_without_text_is_rejected(client: AsyncClient) -> None:
+    response = await client.post(URL, files=upload(build_docx(docx_paragraph()), "empty.docx"))
+
+    assert response.status_code == 422
+    assert error_code(response) == "no_text_found"
+
+
+async def test_word_document_over_the_page_limit_is_rejected(client: AsyncClient) -> None:
+    # The test limit is 3 pages, and 3,000 characters count as a page.
+    docx = build_docx(docx_paragraph("x" * 9_001))
+
+    response = await client.post(URL, files=upload(docx, "long.docx"))
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "too_many_pages",
+        "message": "The document is about 4 pages long. The limit is 3.",
+    }
+
+
 # --- A file that was extracted before ---------------------------------------------------------
 
 
@@ -339,16 +438,45 @@ async def test_content_decides_the_file_type_not_the_name_or_declared_type(
 
     assert response.status_code == 415
     assert error_code(response) == "unsupported_file_type"
+    assert response.json()["error"]["message"] == "Only PDF and Word (.docx) files are supported."
 
 
-async def test_word_documents_are_not_supported_yet(client: AsyncClient) -> None:
-    docx = b"PK\x03\x04" + b"0" * 100
-    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+async def test_zip_file_that_is_not_a_word_document_is_rejected(client: AsyncClient) -> None:
+    # A .docx is a ZIP file, but a ZIP file called .docx is not a Word document.
+    archive = b"PK\x03\x04" + b"0" * 100
 
-    response = await client.post(URL, files=upload(docx, "contract.docx", media_type))
+    response = await client.post(URL, files=upload(archive, "contract.docx", DOCX_MEDIA_TYPE))
 
     assert response.status_code == 415
     assert error_code(response) == "unsupported_file_type"
+
+
+async def test_old_word_file_is_rejected_with_advice(client: AsyncClient) -> None:
+    doc = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 200
+
+    response = await client.post(URL, files=upload(doc, "contract.doc", "application/msword"))
+
+    assert response.status_code == 415
+    assert response.json()["error"] == {
+        "code": "unsupported_file_type",
+        "message": "Files in the old Office format, such as .doc, are not supported. "
+        "Save the document as .docx or as a PDF and upload it again.",
+    }
+
+
+async def test_password_protected_word_file_is_rejected(client: AsyncClient) -> None:
+    # A .docx with a password is stored encrypted, in the container of the old formats.
+    protected = (
+        bytes.fromhex("d0cf11e0a1b11ae1")
+        + b"\x00" * 64
+        + "EncryptedPackage".encode("utf-16-le")
+        + b"\x00" * 64
+    )
+
+    response = await client.post(URL, files=upload(protected, "contract.docx", DOCX_MEDIA_TYPE))
+
+    assert response.status_code == 422
+    assert error_code(response) == "file_encrypted"
 
 
 async def test_file_one_byte_over_the_size_limit_is_rejected(build_app: AppBuilder) -> None:

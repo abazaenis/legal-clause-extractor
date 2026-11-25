@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from app.errors import UnsupportedFileTypeError
 from app.extraction.file_types import FileType
 from app.extraction.parsers.base import DocumentParser
+from app.extraction.parsers.docx import DocxParser
 from app.extraction.parsers.pdf import PdfParser
 
 
@@ -30,4 +31,9 @@ class ParserFactory:
 
 def build_parser_factory(*, max_pages: int) -> ParserFactory:
     """The factory the application uses, with every supported format registered."""
-    return ParserFactory({FileType.PDF: PdfParser(max_pages=max_pages)})
+    return ParserFactory(
+        {
+            FileType.PDF: PdfParser(max_pages=max_pages),
+            FileType.DOCX: DocxParser(max_pages=max_pages),
+        }
+    )

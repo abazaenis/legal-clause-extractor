@@ -14,10 +14,10 @@ import pytest
 
 from app.extraction.answer import ExtractionAnswer, RawClauseStart, RawMetadata
 from app.extraction.clauses import cut_clauses, summarise_page_noise
-from app.extraction.file_types import FileType
+from app.extraction.file_types import detect_file_type
 from app.extraction.labels import ClauseType
 from app.extraction.models import ClauseStart, PageNoise, ParsedDocument, SourceFile
-from app.extraction.parsers.pdf import PdfParser
+from app.extraction.parsers.factory import build_parser_factory
 from app.extraction.repair import repair_answer
 
 CONTRACTS = Path(__file__).resolve().parents[2] / "Contracts"
@@ -31,18 +31,24 @@ PAGE_LABEL = re.compile(r"\d{1,3}|[ivx]+|[A-Z]-\d+|page \d+( of \d+)?", re.IGNOR
 
 @pytest.fixture(scope="module")
 def parsed() -> dict[str, ParsedDocument]:
-    """Every sample PDF, parsed once for the whole module."""
-    parser = PdfParser(max_pages=300)
+    """Every sample contract, PDF and Word, parsed once for the whole module.
+
+    Each file goes the way an upload goes: its type is read from its content, and the
+    factory picks the parser.
+    """
+    parsers = build_parser_factory(max_pages=300)
     documents = {}
-    for path in sorted(CONTRACTS.glob("*.pdf")):
+    for path in sorted([*CONTRACTS.glob("*.pdf"), *CONTRACTS.glob("*.docx")]):
         data = path.read_bytes()
+        file_type = detect_file_type(data)
+        assert file_type is not None, path.name
         source = SourceFile(
             filename=path.name,
-            file_type=FileType.PDF,
+            file_type=file_type,
             data=data,
             sha256=hashlib.sha256(data).hexdigest(),
         )
-        documents[path.name] = parser.parse(source)
+        documents[path.name] = parsers.for_file_type(file_type).parse(source)
     return documents
 
 
@@ -115,6 +121,91 @@ def test_long_agreement(parsed: dict[str, ParsedDocument]) -> None:
         ("SERVICE AGREEMENT NO. 2604", False),
     ]
     assert [warning.code for warning in document.warnings] == ["pages_without_text"]
+
+
+# --- The two Word samples ----------------------------------------------------------------------
+
+
+def test_word_contract_gets_the_numbers_that_word_shows(
+    parsed: dict[str, ParsedDocument],
+) -> None:
+    """The master agreement has no clause number in its text. Word generates all of
+    them from the paragraph styles, and so does the parser.
+    """
+    document = sample(parsed, "Long Form MSA")
+    text = {line.number: line.text for line in document.lines}
+
+    assert (len(document.lines), document.page_count) == (113, None)
+    assert noise_texts(document) == []
+    assert [(warning.code, warning.message) for warning in document.warnings] == [
+        (
+            "numbers_computed",
+            "Paragraph numbers that are not written in the text were computed from the "
+            "document's numbering settings, the way Word shows them: 90 in all.",
+        )
+    ]
+    # Nearly all of these paragraphs sit inside content controls.
+    assert text[12] == "1. Services."
+    assert text[13].startswith("1.1 Service Provider shall provide to ACME the services")
+    # A placeholder in a numbered style, with numbering switched off: it takes no number.
+    assert text[27].startswith("3.3 ACME may, in good faith, dispute any invoiced amount")
+    assert text[28] == "${T:Travel Expenses}"
+    assert text[29].startswith("3.4 During the initial term")
+    # A sub-clause style whose paragraph says it is a clause. Read by style alone it
+    # would be 5.2, and every number after it would be one too low.
+    assert text[42] == "6. Data Privacy"
+    assert text[43].startswith("6.1 Service Provider will only collect")
+    # Letters start again under each sub-clause.
+    assert text[61].startswith("(f) Has a receiver, trustee, custodian")
+    assert text[62].startswith("9.4 Upon expiration or termination")
+    assert text[63].startswith("(a) Deliver to ACME all documents")
+    assert text[108].startswith("27. Force Majeure.")
+
+
+def test_table_of_the_word_contract_is_read_row_by_row(
+    parsed: dict[str, ParsedDocument],
+) -> None:
+    """The notice addresses of clause 16, the only table in the samples."""
+    text = {line.number: line.text for line in sample(parsed, "Long Form MSA").lines}
+
+    assert text[92].startswith("16. Notices.")
+    assert text[93] == "Notice to ACME: | Random address"
+    assert text[95] == "Notice to Service Provider: | [SERVICE PROVIDER ADDRESS]"
+    assert text[97].startswith("17. Waiver.")
+
+
+def test_header_and_footer_of_the_word_contract_are_not_in_its_lines(
+    parsed: dict[str, ParsedDocument],
+) -> None:
+    lines = [line.text for line in sample(parsed, "Long Form MSA").lines]
+
+    # The footer of every page reads "Professional Services Master Agreement ACME
+    # Confidential Information Page 17". It is stored apart from the body and never read.
+    assert not any(re.search(r"\bPage \d", line) for line in lines)
+    assert not any(line.endswith("ACME Confidential Information") for line in lines)
+
+
+def test_converted_word_contract_keeps_its_typed_numbers_and_loses_its_page_numbers(
+    parsed: dict[str, ParsedDocument],
+) -> None:
+    """This file was converted from a web page. Its clause numbers are typed, half of
+    its paragraphs are empty, and its page numbers are paragraphs like any other.
+    """
+    document = sample(parsed, "Law_Insider")
+    text = {line.number: line.text for line in document.lines}
+
+    assert (len(document.lines), document.page_count) == (102, None)
+    # Nothing was computed, so there is nothing to report.
+    assert document.warnings == ()
+    # The numbers are in the text, written with non-breaking spaces in the file.
+    assert text[7].startswith("1. Appointment. Client appoints RSE Transfer Agent LLC")
+    assert text[40].startswith("13. Confidentiality. (a) In connection with")
+    # The page numbers 2 to 7. The first one sits in the middle of a sentence.
+    assert noise_texts(document) == ["2", "3", "4", "5", "6", "7"]
+    assert text[21].endswith("the Transfer Agent may consult with legal counsel")
+    assert (text[22], document.lines[21].is_noise) == ("2", True)
+    assert text[23].startswith("whose advice shall be full and complete authorization")
+    assert summarise_page_noise(document) == (PageNoise(text="#", occurrences=6),)
 
 
 # --- Cutting the clause text ------------------------------------------------------------------

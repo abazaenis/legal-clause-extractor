@@ -1,7 +1,8 @@
-"""Page noise in a PDF: running headers, footers and page numbers.
+"""Page noise: running headers, footers and page numbers.
 
-Used by the PDF parser. Everything here is a pure function of the page text, so it
-can be tested without a PDF file.
+`flag_page_noise` is for a PDF, which has pages. `flag_body_page_numbers` is for a
+Word document, which has none but can still carry page numbers in its text. Both are
+pure functions of the text, so they can be tested without a file.
 
 The rules are deliberately conservative. A line wrongly left in costs little: a
 stray footer ends up inside a clause. A line wrongly flagged would drop contract
@@ -62,6 +63,40 @@ def flag_page_noise(pages: Pages) -> Flags:
     _flag_repeated_edge_lines(pages, flags)
     _flag_page_labels(pages, flags)
     _flag_counting_numbers(pages, flags)
+    return flags
+
+
+def flag_body_page_numbers(paragraphs: Sequence[str], in_body: Sequence[bool]) -> list[bool]:
+    """Say, for every paragraph of a document without pages, whether it is a page number.
+
+    A Word file that was converted from a PDF or from a web page can have its page
+    numbers as ordinary paragraphs, in the middle of a clause or even of a sentence.
+
+    A paragraph is flagged when it is a bare number and belongs to a run of at least
+    three such paragraphs that count upwards by one: 2, 3, 4. A run that starts at 1
+    is left alone, because it could just as well be a list someone numbered by hand,
+    and a first page rarely carries its number. `in_body` is False for the rows of a
+    table, where a bare number is a figure.
+    """
+    flags = [False] * len(paragraphs)
+    run: list[int] = []  # indexes of the numbers counted so far
+    previous: int | None = None
+
+    def flag_run() -> None:
+        if len(run) >= _MIN_NUMBER_RUN and int(paragraphs[run[0]]) != 1:
+            for index in run:
+                flags[index] = True
+
+    for index, (text, eligible) in enumerate(zip(paragraphs, in_body, strict=True)):
+        if not eligible or not _BARE_NUMBER.fullmatch(text.strip()):
+            continue
+        value = int(text)
+        if previous is not None and value != previous + 1:
+            flag_run()
+            run = []
+        run.append(index)
+        previous = value
+    flag_run()
     return flags
 
 

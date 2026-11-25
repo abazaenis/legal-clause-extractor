@@ -1,6 +1,6 @@
 """Page headers, footers and page numbers are flagged; contract text is not."""
 
-from app.extraction.parsers.noise import flag_page_noise
+from app.extraction.parsers.noise import flag_body_page_numbers, flag_page_noise
 
 HEADER = "ACME CONFIDENTIAL"
 WORDS = (
@@ -195,3 +195,63 @@ def test_footer_and_page_number_above_it_are_both_flagged() -> None:
     pages = [[*body(number), str(number), footer] for number in range(1, 5)]
 
     assert flagged(pages) == [[str(number), footer] for number in range(1, 5)]
+
+
+# --- A document without pages: page numbers typed into the body --------------------------------
+
+
+def body_flags(*paragraphs: str, in_table: tuple[int, ...] = ()) -> list[str]:
+    """The paragraphs that are flagged as page numbers. `in_table` holds their positions."""
+    in_body = [index not in in_table for index in range(len(paragraphs))]
+    flags = flag_body_page_numbers(paragraphs, in_body)
+    return [text for text, flagged in zip(paragraphs, flags, strict=True) if flagged]
+
+
+def test_numbers_that_count_upwards_through_the_text_are_page_numbers() -> None:
+    # As in the sample that was converted from a web page. The first page has no number.
+    assert body_flags(
+        "6. The Agent may consult with legal counsel",
+        "2",
+        "whose advice shall be full authorization.",
+        "7. Indemnification.",
+        "3",
+        "8. Limitation of Liability.",
+        " 4 ",
+    ) == ["2", "3", " 4 "]
+
+
+def test_result_has_one_flag_for_every_paragraph() -> None:
+    paragraphs = ["First.", "2", "Second.", "3", "Third.", "4"]
+
+    assert flag_body_page_numbers(paragraphs, [True] * 6) == [False, True, False, True, False, True]
+
+
+def test_run_that_starts_at_one_could_be_a_list_and_is_kept() -> None:
+    assert body_flags("1", "Definitions", "2", "Term", "3", "Fees") == []
+
+
+def test_fewer_than_three_numbers_are_kept() -> None:
+    assert body_flags("First.", "2", "Second.", "3", "Third.") == []
+
+
+def test_numbers_that_do_not_count_upwards_by_one_are_kept() -> None:
+    assert body_flags("Fee per year:", "500", "Notice period in days:", "30", "Term:", "5") == []
+
+
+def test_count_starts_again_after_a_number_that_does_not_fit() -> None:
+    # Two figures, and then the page numbers of the document.
+    assert body_flags("2", "40", "Text.", "5", "More text.", "6", "The end.", "7") == [
+        "5",
+        "6",
+        "7",
+    ]
+
+
+def test_numbers_in_a_table_are_not_counted() -> None:
+    assert body_flags("2", "3", "4", in_table=(0, 1, 2)) == []
+    # And they do not break the count of the numbers around them.
+    assert body_flags("2", "999", "3", "4", in_table=(1,)) == ["2", "3", "4"]
+
+
+def test_numbers_inside_a_sentence_are_text() -> None:
+    assert body_flags("Clause 2", "3 months", "4.", "Page 5") == []

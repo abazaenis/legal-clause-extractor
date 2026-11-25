@@ -41,7 +41,8 @@ _EXTRACT_RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {
         "model": ErrorResponse,
-        "description": "The file is not a PDF. The content decides, not the file name.",
+        "description": "The file is neither a PDF nor a Word (.docx) document. The content "
+        "decides, not the file name.",
     },
     status.HTTP_422_UNPROCESSABLE_CONTENT: {
         "model": ErrorResponse,
@@ -69,7 +70,7 @@ _EXTRACT_RESPONSES: dict[int | str, dict[str, Any]] = {
     responses=_EXTRACT_RESPONSES,
 )
 async def extract(
-    file: Annotated[UploadFile, File(description="The contract, as a PDF file.")],
+    file: Annotated[UploadFile, File(description="The contract, as a PDF or a Word (.docx) file.")],
     response: Response,
     settings: SettingsDependency,
     parsers: ParserFactoryDependency,
@@ -86,8 +87,9 @@ async def extract(
     """Upload one contract as multipart form data, in a field named `file`.
 
     The file is checked before anything else happens: its size, that it is not empty,
-    and that its content is a PDF. It is then parsed into numbered lines, an LLM says
-    where the clauses start, and code cuts the text of every clause out of the document.
+    and that its content is a PDF or a Word document. It is then parsed into numbered
+    lines, an LLM says where the clauses start, and code cuts the text of every clause
+    out of the document.
 
     A file is identified by its content. Uploading the same file again returns the
     stored result with `200`, without calling the LLM.
