@@ -204,8 +204,8 @@ def demo_list(api: Api) -> None:
 
 
 def demo_refusal(api: Api) -> None:
-    banner("A file that is not a contract")
-    step("POST", "/api/extract", "(notes.txt, plain text)")
+    banner("A file that is not a contract (refused on purpose)")
+    step("POST", "/api/extract", "(notes.txt, plain text: the API should refuse it)")
     reply = api.upload("notes.txt", b"Just some notes.")
     print(f"  {status(reply)}")
     show_error(reply)
