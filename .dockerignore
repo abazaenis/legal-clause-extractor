@@ -1,0 +1,47 @@
+# What is left out of the build context. The image only needs the application code,
+# the migrations and the two files that list the dependencies.
+
+# --- Secrets: the API key must never end up in an image layer ---
+.env
+.env.*
+
+# --- Assignment material and local data (contract text) ---
+Task.md
+Contracts/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Not needed to run the service ---
+.git/
+.gitignore
+.github/
+tests/
+README.md
+Dockerfile
+.dockerignore
+.claude/
+
+# --- Environments, caches and build output ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# --- Editors and operating systems ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

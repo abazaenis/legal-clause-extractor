@@ -25,6 +25,22 @@ flowchart TD
 
 Only one box calls the LLM. Everything else is deterministic code, and the clause text in the response is always copied from the source by that code.
 
+## Running it with Docker
+
+Copy `.env.example` to `.env` and set `LLM_API_KEY`. Then:
+
+```bash
+docker build -t clause-extractor .
+docker run --rm -p 8000:8000 --env-file .env -v clause-extractor-data:/data clause-extractor
+```
+
+The API is at `http://localhost:8000`, and its interactive documentation at `http://localhost:8000/docs`.
+
+- **The key is passed when the container starts.** `.env` is left out of the build, so it is in no image layer.
+- **The database schema is created on start.** The container runs the migrations and then the server.
+- **The stored extractions live in `/data`.** The volume keeps them when the container is removed. Without `-v` they go with the container.
+- **The server does not run as root**, and the image holds no tests, build tools or development packages.
+
 ## Design decisions and trade-offs
 
 ### How the LLM is used
