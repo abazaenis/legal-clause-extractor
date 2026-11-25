@@ -27,7 +27,7 @@ Only one step calls the LLM. Everything else is deterministic code.
 
 ## Running it
 
-Copy `.env.example` to `.env` and set `LLM_API_KEY`.
+Copy `.env.example` to `.env` and set `LLM_API_KEY` (sent separately). Every other setting is optional and documented in `.env.example`.
 
 **With Docker:**
 
@@ -57,19 +57,6 @@ uv run mypy
 ```
 
 The tests never call an LLM; they use a fake one. The tests against the sample contracts are skipped when the `Contracts` folder is missing.
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `LLM_API_KEY` | none | Required |
-| `LLM_PROVIDER` | `deepseek` | `deepseek`, or `openai_compatible` for any API with the OpenAI wire format |
-| `LLM_MODEL` | `deepseek-flash` | The model to ask |
-| `LLM_BASE_URL` | the provider's own | Required for `openai_compatible` |
-| `LLM_REASONING_EFFORT` | the provider's default | Passed through as it is. `.env.example` sets `high` |
-| `LLM_MAX_OUTPUT_TOKENS` | `128000` | An answer that hits the limit is refused. Reasoning counts towards it |
-| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `300` / `2` | Per attempt; retries back off |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./extractions.db` | Any SQLAlchemy async URL |
-| `MAX_UPLOAD_BYTES` / `MAX_PAGES` | 20 MB / `300` | For Word, 3,000 characters count as a page |
-| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 
 ## Results on the sample contracts
 
