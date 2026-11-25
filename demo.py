@@ -237,7 +237,7 @@ def main() -> None:
     api = Api(args.url)
     try:
         api.get("/api/extractions?limit=1")
-    except urllib.error.URLError, OSError:
+    except (urllib.error.URLError, OSError):
         sys.exit(paint(f"No server at {args.url}. Start it first (see the README).", BOLD, RED))
 
     files = files_to_upload(args.files)

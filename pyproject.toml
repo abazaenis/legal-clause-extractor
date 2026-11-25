@@ -38,6 +38,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+# The demo promises Python 3.12+. Without this, the formatter writes 3.14-only syntax
+# into it, such as an except clause without parentheses.
+per-file-target-version = { "demo.py" = "py312" }
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
