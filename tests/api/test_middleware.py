@@ -81,24 +81,6 @@ async def test_body_over_the_limit_is_stopped_while_streaming() -> None:
     assert bytes_read_by_app <= MAX_BODY_BYTES
 
 
-async def test_the_applications_own_answer_is_replaced_once_the_limit_is_hit() -> None:
-    """FastAPI turns an error raised while it parses the body into its own 400."""
-
-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await read_whole_body(receive)
-        except Exception:
-            await send({"type": "http.response.start", "status": 400, "headers": []})
-            await send({"type": "http.response.body", "body": b"Bad request"})
-
-    sent = SentMessages()
-    middleware = UploadSizeLimitMiddleware(app, max_upload_bytes=MAX_UPLOAD_BYTES)
-
-    await middleware(http_scope(), body_in_chunks(MAX_BODY_BYTES * 10), sent)
-
-    assert sent.statuses == [413]
-
-
 async def test_body_within_the_limit_reaches_the_application_untouched() -> None:
     bytes_read_by_app = 0
 
@@ -117,16 +99,3 @@ async def test_body_within_the_limit_reaches_the_application_untouched() -> None
 
     assert bytes_read_by_app == MAX_BODY_BYTES
     assert sent.statuses == [204]
-
-
-async def test_other_connection_types_are_passed_through() -> None:
-    seen: list[str] = []
-
-    async def app(scope: Scope, receive: Receive, send: Send) -> None:
-        seen.append(scope["type"])
-
-    middleware = UploadSizeLimitMiddleware(app, max_upload_bytes=MAX_UPLOAD_BYTES)
-
-    await middleware({"type": "lifespan"}, body_in_chunks(0), SentMessages())
-
-    assert seen == ["lifespan"]

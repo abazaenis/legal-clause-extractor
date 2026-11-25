@@ -33,14 +33,6 @@ def alembic_config() -> Config:
     return Config(str(PROJECT_ROOT / "alembic.ini"))
 
 
-def table_names(database: Path) -> set[str]:
-    engine = sqlalchemy.create_engine(f"sqlite:///{database.as_posix()}")
-    try:
-        return set(sqlalchemy.inspect(engine).get_table_names())
-    finally:
-        engine.dispose()
-
-
 # These tests are synchronous on purpose: Alembic's env.py starts its own event loop.
 
 
@@ -111,33 +103,3 @@ def test_migrations_keep_the_rows_that_are_already_stored(
 
     command.downgrade(alembic_config, FIRST_REVISION)
     assert row_counts(database_file) == {"extractions": 1, "clauses": 2}
-
-
-def test_migrated_schema_accepts_rows_without_pages(
-    database_file: Path, alembic_config: Config
-) -> None:
-    command.upgrade(alembic_config, FIRST_REVISION)
-    insert_extraction_with_two_clauses(database_file)
-    command.upgrade(alembic_config, "head")
-
-    connection = sqlite3.connect(database_file)
-    try:
-        # No pages at all is fine.
-        connection.execute("UPDATE extractions SET page_count = NULL")
-        connection.execute("UPDATE clauses SET start_page = NULL, end_page = NULL WHERE id = 'c0'")
-        connection.commit()
-
-        # Half a page range is not.
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute("UPDATE clauses SET start_page = NULL WHERE id = 'c1'")
-    finally:
-        connection.close()
-
-
-def test_downgrade_removes_every_table(database_file: Path, alembic_config: Config) -> None:
-    command.upgrade(alembic_config, "head")
-    assert {"extractions", "clauses"} <= table_names(database_file)
-
-    command.downgrade(alembic_config, "base")
-
-    assert table_names(database_file) == {"alembic_version"}

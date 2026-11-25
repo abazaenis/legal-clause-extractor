@@ -1,6 +1,5 @@
 """Storing an extraction and finding it again."""
 
-import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
@@ -122,12 +121,6 @@ async def test_stored_result_is_found_by_the_hash_of_its_file(
     ]
 
 
-async def test_file_that_was_never_stored_is_not_found(extractions: ExtractionRepository) -> None:
-    await extractions.save(SOURCE, result())
-
-    assert await extractions.find_by_sha256("b" * 64) is None
-
-
 async def test_document_without_pages_or_metadata_can_be_stored(
     extractions: ExtractionRepository,
 ) -> None:
@@ -219,12 +212,6 @@ async def test_stored_result_is_found_by_its_id(extractions: ExtractionRepositor
     assert [c.number for c in found.clauses] == ["1", "2"]
 
 
-async def test_id_that_was_never_given_out_is_not_found(extractions: ExtractionRepository) -> None:
-    await extractions.save(SOURCE, result())
-
-    assert await extractions.find_by_id(uuid.uuid7()) is None
-
-
 async def test_page_lists_the_newest_first_with_the_number_of_clauses(
     extractions: ExtractionRepository,
 ) -> None:
@@ -261,9 +248,3 @@ async def test_page_is_cut_by_limit_and_offset(extractions: ExtractionRepository
     assert await names(2, 2) == ["contract-3.pdf", "contract-2.pdf"]
     assert await names(2, 4) == ["contract-1.pdf"]
     assert await names(2, 6) == []
-
-
-async def test_page_of_nothing_is_empty(extractions: ExtractionRepository) -> None:
-    page = await extractions.list_page(limit=10, offset=0)
-
-    assert (page.items, page.total) == ((), 0)

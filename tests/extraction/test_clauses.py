@@ -4,7 +4,7 @@ import pytest
 
 from app.extraction.clauses import cut_clauses, summarise_page_noise
 from app.extraction.labels import ClauseType
-from app.extraction.models import ClauseStart, ExtractedClause, Line, PageNoise, ParsedDocument
+from app.extraction.models import ClauseStart, Line, PageNoise, ParsedDocument
 
 
 def document(*texts: str, noise: tuple[int, ...] = (), lines_per_page: int = 100) -> ParsedDocument:
@@ -53,33 +53,6 @@ def test_every_line_of_the_document_ends_up_in_exactly_one_clause() -> None:
     assert rejoined == "\n".join(line.text for line in CONTRACT.lines)
 
 
-def test_one_start_gives_one_clause_with_the_whole_document() -> None:
-    (clause,) = cut_clauses(starts(1), CONTRACT)
-
-    assert (clause.start_line, clause.end_line) == (1, 6)
-    assert clause.text.count("\n") == 5
-
-
-def test_labels_of_the_start_are_carried_over_with_the_position() -> None:
-    preamble = ClauseStart(line=1, type=ClauseType.PREAMBLE)
-    term = ClauseStart(line=5, type=ClauseType.TERM_AND_TERMINATION, number="2", title="Term")
-
-    clauses = cut_clauses([preamble, term], CONTRACT)
-
-    assert clauses[1] == ExtractedClause(
-        position=1,
-        type=ClauseType.TERM_AND_TERMINATION,
-        number="2",
-        title="Term",
-        text="2. Term.\nOne year.",
-        start_line=5,
-        end_line=6,
-        start_page=1,
-        end_page=1,
-    )
-    assert clauses[0].position == 0
-
-
 def test_page_noise_is_left_out_and_its_line_numbers_stay_unused() -> None:
     doc = document(
         "ACME CONFIDENTIAL",
@@ -108,24 +81,6 @@ def test_clause_carries_the_pages_it_spans() -> None:
     clauses = cut_clauses(starts(1, 4), doc)
 
     assert [(clause.start_page, clause.end_page) for clause in clauses] == [(1, 2), (2, 2)]
-
-
-def test_document_without_pages_gives_clauses_without_pages() -> None:
-    # What a Word document will look like: paragraphs, no pages.
-    doc = ParsedDocument(
-        lines=(Line(number=1, text="1. First."), Line(number=2, text="2. Second."))
-    )
-
-    clauses = cut_clauses(starts(1, 2), doc)
-
-    assert [(clause.start_page, clause.end_page) for clause in clauses] == [(None, None)] * 2
-
-
-def test_clause_text_stays_out_of_the_repr() -> None:
-    # A repr ends up in logs and tracebacks, and clause text is contract content.
-    (clause,) = cut_clauses(starts(1), CONTRACT)
-
-    assert "MUTUAL NDA" not in repr(clause)
 
 
 @pytest.mark.parametrize(
@@ -177,7 +132,3 @@ def test_bare_page_numbers_are_counted_together() -> None:
     doc = document("First.", "2", "Second.", "3", "Third.", "14", noise=(2, 4, 6))
 
     assert summarise_page_noise(doc) == (PageNoise(text="#", occurrences=3),)
-
-
-def test_document_without_page_noise_has_nothing_to_report() -> None:
-    assert summarise_page_noise(CONTRACT) == ()

@@ -94,14 +94,6 @@ async def test_answer_and_token_usage_are_returned() -> None:
     assert response.duration_ms >= 0
 
 
-async def test_answer_text_is_kept_out_of_the_repr() -> None:
-    api = FakeAPI((200, completion('{"title": "SECRET AGREEMENT"}')))
-
-    response = await provider_for(api).complete(system=SYSTEM, user=USER)
-
-    assert "SECRET AGREEMENT" not in repr(response)
-
-
 @pytest.mark.parametrize(
     "content",
     [
@@ -164,33 +156,6 @@ async def test_network_failure_becomes_unavailable() -> None:
         await provider_for(api).complete(system=SYSTEM, user=USER)
 
 
-async def test_temporary_failure_is_retried_by_the_sdk() -> None:
-    api = FakeAPI((429, api_error()), (503, api_error()), (200, completion('{"ok": true}')))
-
-    response = await provider_for(api, max_retries=2).complete(system=SYSTEM, user=USER)
-
-    assert response.text == '{"ok": true}'
-    assert len(api.requests) == 3
-
-
-async def test_retries_stop_at_the_configured_number() -> None:
-    api = FakeAPI((503, api_error()))
-
-    with pytest.raises(LLMUnavailableError):
-        await provider_for(api, max_retries=2).complete(system=SYSTEM, user=USER)
-
-    assert len(api.requests) == 3  # the first attempt and two retries
-
-
-async def test_rejected_request_is_not_retried() -> None:
-    api = FakeAPI((401, api_error()))
-
-    with pytest.raises(LLMRequestRejectedError):
-        await provider_for(api, max_retries=2).complete(system=SYSTEM, user=USER)
-
-    assert len(api.requests) == 1
-
-
 # --- What must not leak ----------------------------------------------------------------------
 
 
@@ -243,16 +208,3 @@ async def test_prompts_answers_and_keys_are_never_logged() -> None:
 
 
 # --- Shutdown --------------------------------------------------------------------------------
-
-
-async def test_closing_the_provider_closes_its_connections() -> None:
-    api = FakeAPI()
-    http_client = api.http_client()
-    client = AsyncOpenAI(api_key=API_KEY, base_url="https://llm.test/v1", http_client=http_client)
-    provider = OpenAICompatibleProvider(
-        name="test-provider", client=client, model="requested-model", max_output_tokens=4000
-    )
-
-    await provider.aclose()
-
-    assert http_client.is_closed

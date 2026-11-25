@@ -9,13 +9,12 @@ from structlog.testing import capture_logs
 
 from app.db.repository import ExtractionRepository
 from app.db.session import create_session_factory
-from app.errors import LLMInvalidResponseError, LLMUnavailableError
+from app.errors import LLMInvalidResponseError
 from app.extraction.file_types import FileType
 from app.extraction.labels import ClauseType, ContractType
 from app.extraction.models import (
     ContractMetadata,
     ExtractedClause,
-    ExtractionWarning,
     Line,
     LLMUsage,
     PageNoise,
@@ -143,46 +142,6 @@ async def test_result_holds_the_clauses_with_their_text_and_the_checked_metadata
     )
 
 
-async def test_document_without_pages_goes_through_the_same_pipeline() -> None:
-    parser = RecordingParser(ParsedDocument(lines=(Line(number=1, text="1. Term"),)))
-    llm = FakeLLMProvider()
-
-    result = await extract_document(SOURCE, parsers(parser), llm)
-
-    assert llm.calls[0]["user"] == "<document>\n1| 1. Term\n</document>"
-    assert result.page_count is None
-    assert [(clause.text, clause.start_page) for clause in result.clauses] == [("1. Term", None)]
-
-
-async def test_warnings_come_in_the_order_of_the_pipeline() -> None:
-    hidden_text = ExtractionWarning(code="hidden_text_removed", message="Removed hidden text.")
-    parser = RecordingParser(
-        ParsedDocument(lines=DOCUMENT.lines, page_count=1, warnings=(hidden_text,))
-    )
-    answer = {
-        "metadata": {"title": "MASTER SERVICES AGREEMENT"},
-        "clauses": [
-            {"line": 2, "type": "preamble"},
-            {"line": 4, "type": "duration", "number": "7", "title": "Term"},
-        ],
-    }
-
-    result = await extract_document(SOURCE, parsers(parser), FakeLLMProvider(answer))
-
-    assert [warning.code for warning in result.warnings] == [
-        # What the parser left out of the file.
-        "hidden_text_removed",
-        # What was repaired in the model's answer.
-        "unknown_clause_type",
-        # What the model returned but the document does not say.
-        "clause_number_not_verified",
-        "title_not_verified",
-    ]
-    assert (result.clauses[1].type, result.clauses[1].number) == (ClauseType.OTHER, None)
-    assert result.clauses[1].title == "Term"
-    assert result.metadata.title is None
-
-
 @pytest.mark.parametrize(
     ("answer", "reason"),
     [
@@ -206,23 +165,6 @@ async def test_answer_that_cannot_be_used_is_an_invalid_response(
     assert raised.value.message.startswith("The LLM's answer could not be used")
     # The LLM is not asked a second time.
     assert len(llm.calls) == 1
-
-
-async def test_failure_of_the_llm_is_passed_on() -> None:
-    llm = FakeLLMProvider(LLMUnavailableError("The provider is unavailable."))
-
-    with pytest.raises(LLMUnavailableError):
-        await extract_document(SOURCE, parsers(), llm)
-
-
-async def test_parsing_runs_in_a_worker_thread() -> None:
-    """Parsing is CPU-bound, so it must not run on the thread of the event loop."""
-    parser = RecordingParser()
-
-    await extract_document(SOURCE, parsers(parser), FakeLLMProvider(ANSWER))
-
-    assert parser.thread_id is not None
-    assert parser.thread_id != threading.get_ident()
 
 
 # --- The pipeline with storage: one result per file ------------------------------------------

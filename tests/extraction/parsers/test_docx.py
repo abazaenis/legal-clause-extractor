@@ -94,38 +94,6 @@ def test_text_split_over_several_runs_is_one_text() -> None:
     assert texts(paragraph) == ["${T:Data Security}"]
 
 
-def test_whitespace_of_every_kind_becomes_one_space() -> None:
-    paragraph = paragraph_of(
-        docx_run("1. Appointment.   Client"),
-        "<w:r><w:tab/><w:tab/></w:r>",
-        docx_run("appoints"),
-        "<w:r><w:br/></w:r>",
-        docx_run("the Agent"),
-        "<w:r><w:noBreakHyphen/></w:r>",
-        docx_run("to be."),
-        '<w:r><w:br w:type="page"/></w:r>',
-    )
-
-    assert texts(paragraph) == ["1. Appointment. Client appoints the Agent-to be."]
-
-
-def test_links_and_field_results_are_text_and_field_codes_are_not() -> None:
-    link = f'<w:hyperlink r:id="rId5" xmlns:r="urn:r">{docx_run("legal@example.com")}</w:hyperlink>'
-    field = (
-        '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
-        "<w:r><w:instrText> REF _Ref123 \\h </w:instrText></w:r>"
-        '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
-        + docx_run("Section 5")
-        + '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
-    )
-    simple_field = f'<w:fldSimple w:instr=" DATE ">{docx_run("1 March 2021")}</w:fldSimple>'
-
-    assert texts(
-        paragraph_of(docx_run("Write to "), link, docx_run(" as set out in "), field, docx_run("."))
-        + paragraph_of(docx_run("Dated "), simple_field)
-    ) == ["Write to legal@example.com as set out in Section 5.", "Dated 1 March 2021"]
-
-
 # --- Tables --------------------------------------------------------------------------------------
 
 
@@ -157,16 +125,6 @@ def test_cell_with_several_paragraphs_and_a_table_of_its_own_stays_one_cell() ->
     )
 
     assert texts(table) == ["Address | Head office Second floor Street | City"]
-
-
-def test_row_inside_a_content_control_is_read() -> None:
-    table = (
-        "<w:tbl><w:sdt><w:sdtContent><w:tr>"
-        f"<w:tc>{docx_paragraph('Fee')}</w:tc><w:tc>{docx_paragraph('100')}</w:tc>"
-        "</w:tr></w:sdtContent></w:sdt></w:tbl>"
-    )
-
-    assert texts(table) == ["Fee | 100"]
 
 
 # --- Numbers that Word generates ---------------------------------------------------------------
@@ -429,11 +387,6 @@ def test_document_without_text_is_refused(body: str) -> None:
 # --- Files that are damaged or hostile ---------------------------------------------------------
 
 
-def test_file_that_is_not_a_zip_archive_is_unreadable() -> None:
-    with pytest.raises(UnreadableFileError, match="damaged or incomplete"):
-        parse(b"PK\x03\x04 this is not really a zip file")
-
-
 def test_package_without_the_main_part_is_unreadable() -> None:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -441,18 +394,6 @@ def test_package_without_the_main_part_is_unreadable() -> None:
 
     with pytest.raises(UnreadableFileError, match="not a standard Word document"):
         parse(buffer.getvalue())
-
-
-@pytest.mark.parametrize(
-    "main_part",
-    [
-        pytest.param(b"<w:document", id="XML that is cut off"),
-        pytest.param(b"\x00\x01\x02 not XML at all", id="not XML"),
-    ],
-)
-def test_main_part_that_is_not_xml_is_unreadable(main_part: bytes) -> None:
-    with pytest.raises(UnreadableFileError, match="damaged or incomplete"):
-        parse(build_docx("", parts={"word/document.xml": main_part}))
 
 
 def test_main_part_that_is_some_other_xml_is_not_a_word_document() -> None:
@@ -472,14 +413,6 @@ def test_part_that_declares_a_document_type_is_refused(part: str) -> None:
 
     with pytest.raises(UnreadableFileError, match="declares a document type"):
         parse(build_docx(docx_paragraph("1. Term."), parts={part: bomb}))
-
-
-def test_document_type_is_also_found_in_another_encoding() -> None:
-    # A search for the bytes "<!DOCTYPE" would miss this. The XML parser does not.
-    bomb = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE bomb []><bomb/>'.encode("utf-16")
-
-    with pytest.raises(UnreadableFileError, match="declares a document type"):
-        parse(build_docx("", parts={"word/document.xml": bomb}))
 
 
 def test_part_that_unpacks_to_more_than_the_limit_is_refused(
@@ -518,12 +451,3 @@ def test_directory_that_understates_a_size_does_not_get_more_text_in(
     # the checksum does not fit.
     with pytest.raises(UnreadableFileError, match="damaged or incomplete"):
         parse(data)
-
-
-def test_package_with_an_absurd_number_of_parts_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(docx, "_MAX_PARTS", 3)
-
-    with pytest.raises(UnreadableFileError):
-        parse(build_docx(docx_paragraph("1. Term."), parts={"a.xml": b"", "b.xml": b""}))

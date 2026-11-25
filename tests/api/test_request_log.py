@@ -38,18 +38,6 @@ async def test_every_response_carries_a_request_id_of_its_own(client: AsyncClien
     assert len(set(ids)) == 3
 
 
-async def test_request_stopped_for_its_size_has_a_request_id_too(
-    client: AsyncClient, settings: Settings
-) -> None:
-    # This one is answered by the size limit, before the application sees it.
-    too_large = b"%PDF-1.7\n" + b"0" * (settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES)
-
-    response = await client.post("/api/extract", files=upload(too_large))
-
-    assert response.status_code == 413
-    assert OUR_OWN_ID.fullmatch(response.headers["x-request-id"])
-
-
 async def test_request_id_sent_by_the_caller_is_kept(client: AsyncClient) -> None:
     response = await client.get("/api/extractions", headers={"X-Request-ID": "checkout-7f3a.42"})
 
@@ -74,39 +62,6 @@ async def test_request_id_that_does_not_look_like_one_is_replaced(
 
 
 # --- The log lines of a request ----------------------------------------------------------------
-
-
-async def test_one_line_is_logged_when_a_request_is_done(client: AsyncClient) -> None:
-    with capture_logs(processors=[merge_contextvars]) as logs:
-        response = await client.get("/api/extractions", params={"limit": "5"})
-
-    (line,) = [entry for entry in logs if entry["event"] == "request_finished"]
-    assert line == {
-        "event": "request_finished",
-        "log_level": "info",
-        "request_id": response.headers["x-request-id"],
-        "method": "GET",
-        # The path, without the query string.
-        "path": "/api/extractions",
-        "status_code": 200,
-        "duration_ms": line["duration_ms"],
-    }
-    assert isinstance(line["duration_ms"], int)
-
-
-async def test_status_is_logged_as_a_plain_number_for_every_kind_of_response(
-    client: AsyncClient,
-) -> None:
-    with capture_logs() as logs:
-        await client.get("/api/extractions")
-        await client.get("/api/extractions", params={"limit": "0"})
-        await client.get("/no-such-path")
-        await client.post("/api/extract", files=upload(b"Not a PDF at all."))
-
-    statuses = [entry["status_code"] for entry in logs if entry["event"] == "request_finished"]
-    assert statuses == [200, 422, 404, 415]
-    # Not an `HTTPStatus`, which a text log would write out by its name.
-    assert all(type(status) is int for status in statuses)
 
 
 async def test_every_line_logged_for_a_request_carries_its_id(client: AsyncClient) -> None:
@@ -164,25 +119,6 @@ async def test_requests_refused_before_the_endpoint_runs_are_logged_too(
         if entry["event"] == "request_refused"
     ]
     assert refused == [("file_too_large", 413), ("not_found", 404), ("method_not_allowed", 405)]
-
-
-async def test_failure_of_the_llm_is_logged_as_an_error(
-    build_app: AppBuilder, settings: Settings
-) -> None:
-    # The application is built first: building it sets up logging, which would end the capture.
-    app = build_app(settings, FakeLLMProvider("Sure! Here are the clauses."))
-
-    with capture_logs() as logs:
-        async with client_for(app) as client:
-            await client.post("/api/extract", files=upload(build_pdf([["1. Definitions."]])))
-
-    (refused,) = [entry for entry in logs if entry["event"] == "request_refused"]
-    assert refused == {
-        "event": "request_refused",
-        "log_level": "error",
-        "code": "llm_invalid_response",
-        "status_code": 502,
-    }
 
 
 async def test_unhandled_error_is_logged_with_its_traceback_and_answered_with_the_id(

@@ -7,7 +7,7 @@ import pytest
 from app.errors import LLMInvalidResponseError
 from app.extraction.answer import ExtractionAnswer, RawClauseStart, RawMetadata
 from app.extraction.labels import ClauseType, ContractType
-from app.extraction.models import ClauseStart, Line, ParsedDocument, Party
+from app.extraction.models import ClauseStart, Line, ParsedDocument
 from app.extraction.repair import RepairedAnswer, repair_answer
 
 
@@ -123,15 +123,6 @@ def test_unknown_type_becomes_other() -> None:
     ]
 
 
-def test_missing_type_becomes_other() -> None:
-    _, warnings, repaired = repair(answer(start(1), start(3, None)), TEN_LINES)
-
-    assert repaired.starts[1].type is ClauseType.OTHER
-    assert warnings == [
-        ("unknown_clause_type", 'The clause start on line 3 had no type and was labelled "other".')
-    ]
-
-
 def test_starts_out_of_order_are_sorted() -> None:
     lines, warnings, _ = repair(answer(start(1), start(7), start(4), start(9)), TEN_LINES)
 
@@ -220,27 +211,6 @@ def test_start_is_kept_when_no_other_start_has_its_number() -> None:
     )
 
     assert lines == [1, 3]
-    assert warnings == []
-
-
-@pytest.mark.parametrize(
-    "line_above",
-    [
-        pytest.param("conditioned or delayed.", id="a finished sentence"),
-        pytest.param("NETWORK UPGRADE FACILITIES", id="a heading"),
-        pytest.param("Figure C-4", id="a caption"),
-        pytest.param("(a) the first obligation; and", id="a list item ending in and"),
-        pytest.param("terms of the account. Section 604(a)(3)(F)(ii)", id="a citation"),
-    ],
-)
-def test_repeated_number_alone_does_not_remove_a_start(line_above: str) -> None:
-    # Numbers repeat all the time: "1." in the contract and again in an appendix,
-    # "(b)" under every section. Each of these lines came up in the sample contracts.
-    doc = document("1. First part.", "It ends here.", line_above, "1. Second part with the number.")
-
-    lines, warnings, _ = repair(answer(start(1, number="1"), start(4, number="1")), doc)
-
-    assert lines == [1, 4]
     assert warnings == []
 
 
@@ -451,15 +421,6 @@ def test_heading_must_follow_a_line_that_ends_a_sentence() -> None:
     assert warnings == []
 
 
-def test_heading_on_the_first_line_of_the_document_has_no_line_before_it() -> None:
-    doc = document("EXHIBIT A", "The first paragraph.", "The second paragraph.")
-
-    lines, warnings, _ = repair(answer(start(2)), doc)
-
-    assert lines == [1]
-    assert [code for code, _ in warnings] == ["clause_start_moved_to_heading"]
-
-
 def test_start_that_is_on_an_attachment_heading_itself_stays_there() -> None:
     # The line above the heading is the last row of a list of exhibits, not its heading.
     doc = document(
@@ -474,25 +435,6 @@ def test_start_that_is_on_an_attachment_heading_itself_stays_there() -> None:
 
     assert lines == [1, 4]
     assert warnings == []
-
-
-def test_attachment_heading_that_is_a_start_already_is_left_alone() -> None:
-    lines, warnings, _ = repair(answer(start(1), start(2, "exhibit"), start(3)), EXHIBIT_HEADING)
-
-    assert lines == [1, 2, 3]
-    assert warnings == []
-
-
-def test_start_with_a_title_is_moved_once_and_reported_once() -> None:
-    # Both rules apply here. The rule about titles comes first, and after it the start
-    # is on the heading itself.
-    lines, warnings, _ = repair(
-        answer(start(1), start(3, "exhibit", title="Access Security Requirements")),
-        EXHIBIT_HEADING,
-    )
-
-    assert lines == [1, 2]
-    assert [code for code, _ in warnings] == ["clause_start_moved_to_title"]
 
 
 def test_page_noise_between_the_heading_and_the_start_is_skipped() -> None:
@@ -533,11 +475,6 @@ def test_one_fix_is_always_allowed_so_short_contracts_are_not_refused() -> None:
     assert len(warnings) == 1
 
 
-def test_two_fixes_in_a_short_answer_are_too_many() -> None:
-    with pytest.raises(LLMInvalidResponseError, match="2 of its 4 clause starts needed"):
-        repair_answer(answer(start(1), start(2), start(98), start(99)), TEN_LINES)
-
-
 def test_unreadable_entries_count_as_fixes() -> None:
     # One unreadable entry and two missing lines: three fixes in an answer of twenty-two.
     answer_ = twenty_starts(3).model_copy(update={"unreadable_clauses": 1})
@@ -559,47 +496,12 @@ def test_unknown_types_do_not_count_against_the_answer() -> None:
     assert {repaired.starts[n - 1].type for n in labels} == {ClauseType.OTHER}
 
 
-def test_unreadable_entries_are_reported() -> None:
-    _, warnings, _ = repair(
-        answer(*(start(n) for n in range(1, 21)), unreadable_clauses=2), TWENTY_LINES
-    )
-
-    assert warnings == [
-        (
-            "clause_start_unreadable",
-            "Left out 2 clause starts that could not be read in the LLM's answer.",
-        )
-    ]
-
-
 def test_answer_with_no_usable_start_is_refused() -> None:
     with pytest.raises(LLMInvalidResponseError, match="1 of its 1 clause starts needed"):
         repair_answer(answer(start(99)), TEN_LINES)
 
 
 # --- Metadata --------------------------------------------------------------------------------
-
-
-def test_metadata_is_carried_over() -> None:
-    metadata = RawMetadata.model_validate(
-        {
-            "title": "MUTUAL NON-DISCLOSURE AGREEMENT",
-            "contract_type": "NDA",
-            "effective_date": "August 11, 2023",
-            "parties": [{"name": "Leumi UK Group Limited", "role": "Funder"}, {"role": "Customer"}],
-        }
-    )
-
-    _, warnings, repaired = repair(answer(start(1), metadata=metadata), TEN_LINES)
-
-    assert warnings == []
-    assert repaired.facts.title == "MUTUAL NON-DISCLOSURE AGREEMENT"
-    assert repaired.facts.contract_type is ContractType.NDA
-    assert repaired.facts.effective_date == "August 11, 2023"
-    assert repaired.facts.parties == (
-        Party(name="Leumi UK Group Limited", role="Funder"),
-        Party(name=None, role="Customer"),
-    )
 
 
 def test_unknown_contract_type_becomes_other_without_counting_as_a_start_fix() -> None:

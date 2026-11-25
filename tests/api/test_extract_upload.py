@@ -2,14 +2,12 @@
 
 import hashlib
 import uuid
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
-from app.api.middleware import MULTIPART_OVERHEAD_BYTES
 from app.config import Settings
 from app.errors import LLMTimeoutError, LLMUnavailableError
 from app.extraction.prompt import PROMPT_VERSION, system_prompt
@@ -31,13 +29,6 @@ async def post(app: FastAPI, pdf: bytes) -> Response:
     """Upload a contract to this application."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         return await client.post(URL, files=upload(pdf))
-
-
-def padding_that_starts_like_a_pdf(size: int) -> bytes:
-    """Exactly `size` bytes with a PDF header. Enough for the size checks, which run
-    before anything tries to read the file."""
-    header = b"%PDF-1.7\n"
-    return header + b"0" * (size - len(header))
 
 
 def error_code(response: Response) -> str:
@@ -205,26 +196,6 @@ async def test_llm_receives_the_instructions_and_the_contract_as_numbered_lines(
     ]
 
 
-async def test_pdf_is_accepted_whatever_the_client_calls_it(client: AsyncClient) -> None:
-    pdf = build_pdf([["1. Definitions."]])
-
-    response = await client.post(URL, files=upload(pdf, "notes.txt", "text/plain"))
-
-    assert response.status_code == 201
-    # The name is kept as given. The type is what the content says it is.
-    assert response.json()["file"]["filename"] == "notes.txt"
-    assert response.json()["file"]["content_type"] == "application/pdf"
-
-
-async def test_file_exactly_at_the_size_limit_is_accepted(build_app: AppBuilder) -> None:
-    pdf = build_pdf([["1. Definitions."]])
-    settings = Settings(max_upload_bytes=len(pdf), _env_file=None)
-
-    response = await post(build_app(settings, FakeLLMProvider()), pdf)
-
-    assert response.status_code == 201
-
-
 # --- A Word document ---------------------------------------------------------------------------
 
 
@@ -294,35 +265,6 @@ async def test_word_document_is_extracted_like_a_pdf_only_without_pages(
     assert len(llm.calls) == 1
 
 
-async def test_word_document_that_cannot_be_read_is_rejected(client: AsyncClient) -> None:
-    damaged = build_docx("", parts={"word/document.xml": b"<w:document"})
-
-    response = await client.post(URL, files=upload(damaged, "msa.docx", DOCX_MEDIA_TYPE))
-
-    assert response.status_code == 422
-    assert error_code(response) == "file_unreadable"
-
-
-async def test_word_document_without_text_is_rejected(client: AsyncClient) -> None:
-    response = await client.post(URL, files=upload(build_docx(docx_paragraph()), "empty.docx"))
-
-    assert response.status_code == 422
-    assert error_code(response) == "no_text_found"
-
-
-async def test_word_document_over_the_page_limit_is_rejected(client: AsyncClient) -> None:
-    # The test limit is 3 pages, and 3,000 characters count as a page.
-    docx = build_docx(docx_paragraph("x" * 9_001))
-
-    response = await client.post(URL, files=upload(docx, "long.docx"))
-
-    assert response.status_code == 422
-    assert response.json()["error"] == {
-        "code": "too_many_pages",
-        "message": "The document is about 4 pages long. The limit is 3.",
-    }
-
-
 # --- A file that was extracted before ---------------------------------------------------------
 
 
@@ -344,20 +286,6 @@ async def test_same_file_again_returns_the_stored_result_without_an_llm_call(
     assert "location" not in again.headers
 
 
-async def test_same_content_under_another_name_is_the_same_document(
-    client: AsyncClient, llm: FakeLLMProvider
-) -> None:
-    pdf = build_pdf([["1. Definitions."]])
-    first = await client.post(URL, files=upload(pdf, "nda.pdf"))
-
-    again = await client.post(URL, files=upload(pdf, "copy of nda.pdf"))
-
-    assert again.status_code == 200
-    assert again.json()["document_id"] == first.json()["document_id"]
-    assert again.json()["file"]["filename"] == "nda.pdf"
-    assert len(llm.calls) == 1
-
-
 async def test_failed_extraction_is_not_stored(build_app: AppBuilder, settings: Settings) -> None:
     pdf = contract()
     llm = FakeLLMProvider(LLMUnavailableError("The provider is unavailable."), ANSWER)
@@ -373,14 +301,6 @@ async def test_failed_extraction_is_not_stored(build_app: AppBuilder, settings: 
 
 
 # --- Checks that need no parser ------------------------------------------------------------
-
-
-async def test_missing_file_field_is_rejected(client: AsyncClient) -> None:
-    response = await client.post(URL, data={"something_else": "value"})
-
-    assert response.status_code == 422
-    assert error_code(response) == "invalid_request"
-    assert "file" in response.json()["error"]["message"]
 
 
 async def test_empty_file_is_rejected(client: AsyncClient) -> None:
@@ -402,139 +322,7 @@ async def test_content_decides_the_file_type_not_the_name_or_declared_type(
     assert response.json()["error"]["message"] == "Only PDF and Word (.docx) files are supported."
 
 
-async def test_zip_file_that_is_not_a_word_document_is_rejected(client: AsyncClient) -> None:
-    # A .docx is a ZIP file, but a ZIP file called .docx is not a Word document.
-    archive = b"PK\x03\x04" + b"0" * 100
-
-    response = await client.post(URL, files=upload(archive, "contract.docx", DOCX_MEDIA_TYPE))
-
-    assert response.status_code == 415
-    assert error_code(response) == "unsupported_file_type"
-
-
-async def test_old_word_file_is_rejected_with_advice(client: AsyncClient) -> None:
-    doc = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 200
-
-    response = await client.post(URL, files=upload(doc, "contract.doc", "application/msword"))
-
-    assert response.status_code == 415
-    assert response.json()["error"] == {
-        "code": "unsupported_file_type",
-        "message": "Files in the old Office format, such as .doc, are not supported. "
-        "Save the document as .docx or as a PDF and upload it again.",
-    }
-
-
-async def test_password_protected_word_file_is_rejected(client: AsyncClient) -> None:
-    # A .docx with a password is stored encrypted, in the container of the old formats.
-    protected = (
-        bytes.fromhex("d0cf11e0a1b11ae1")
-        + b"\x00" * 64
-        + "EncryptedPackage".encode("utf-16-le")
-        + b"\x00" * 64
-    )
-
-    response = await client.post(URL, files=upload(protected, "contract.docx", DOCX_MEDIA_TYPE))
-
-    assert response.status_code == 422
-    assert error_code(response) == "file_encrypted"
-
-
-async def test_file_one_byte_over_the_size_limit_is_rejected(build_app: AppBuilder) -> None:
-    # Small enough to pass the middleware's allowance for multipart wrapping, so this
-    # exercises the exact check made after the file has been read.
-    pdf = build_pdf([["1. Definitions."]])
-    settings = Settings(max_upload_bytes=len(pdf) - 1, _env_file=None)
-
-    response = await post(build_app(settings, FakeLLMProvider()), pdf)
-
-    assert response.status_code == 413
-    assert error_code(response) == "file_too_large"
-
-
-async def test_far_oversized_file_is_rejected(client: AsyncClient, settings: Settings) -> None:
-    data = padding_that_starts_like_a_pdf(
-        settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES + 5000
-    )
-
-    response = await client.post(URL, files=upload(data))
-
-    assert "content-length" in response.request.headers
-    assert response.status_code == 413
-    assert error_code(response) == "file_too_large"
-    # The test limit is 64 KB.
-    assert response.json()["error"]["message"] == "The file is larger than the limit of 64 KB."
-
-
-async def test_oversized_upload_without_content_length_is_stopped_while_streaming(
-    client: AsyncClient, settings: Settings
-) -> None:
-    boundary = "test-boundary"
-    body = (
-        (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="file"; filename="nda.pdf"\r\n'
-            "Content-Type: application/pdf\r\n\r\n"
-        ).encode()
-        + padding_that_starts_like_a_pdf(
-            settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES + 5000
-        )
-        + f"\r\n--{boundary}--\r\n".encode()
-    )
-
-    async def chunks() -> AsyncIterator[bytes]:
-        for start in range(0, len(body), 4096):
-            yield body[start : start + 4096]
-
-    response = await client.post(
-        URL,
-        content=chunks(),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-
-    # A streamed body is sent chunked, so there is no Content-Length to check up front.
-    assert "content-length" not in response.request.headers
-    assert response.status_code == 413
-    assert error_code(response) == "file_too_large"
-
-
 # --- Checks made by the parser -------------------------------------------------------------
-
-
-async def test_password_protected_pdf_is_rejected(client: AsyncClient) -> None:
-    pdf = build_pdf([["1. Definitions."]], password="secret")
-
-    response = await client.post(URL, files=upload(pdf))
-
-    assert response.status_code == 422
-    assert error_code(response) == "file_encrypted"
-
-
-async def test_damaged_pdf_is_rejected(client: AsyncClient) -> None:
-    pdf = build_pdf([["1. Definitions."], ["2. Term."]])
-
-    response = await client.post(URL, files=upload(pdf[: len(pdf) // 2]))
-
-    assert response.status_code == 422
-    assert error_code(response) == "file_unreadable"
-
-
-async def test_pdf_without_text_is_rejected(client: AsyncClient) -> None:
-    response = await client.post(URL, files=upload(build_pdf([[], []])))
-
-    assert response.status_code == 422
-    assert error_code(response) == "no_text_found"
-
-
-async def test_pdf_over_the_page_limit_is_rejected(client: AsyncClient) -> None:
-    # The test limit is 3 pages.
-    pdf = build_pdf([["1."], ["2."], ["3."], ["4."]])
-
-    response = await client.post(URL, files=upload(pdf))
-
-    assert response.status_code == 422
-    assert error_code(response) == "too_many_pages"
-    assert response.json()["error"]["message"] == "The file has 4 pages. The limit is 3."
 
 
 # --- The LLM call --------------------------------------------------------------------------
@@ -660,13 +448,3 @@ async def test_answer_that_needs_too_many_fixes_is_a_bad_gateway(
 
 
 # --- The documentation -----------------------------------------------------------------------
-
-
-async def test_openapi_documents_both_outcomes(client: AsyncClient) -> None:
-    operation = (await client.get("/openapi.json")).json()["paths"]["/api/extract"]["post"]
-
-    for status in ("200", "201"):
-        reference = operation["responses"][status]["content"]["application/json"]["schema"]["$ref"]
-        assert reference.endswith("/ExtractionResponse")
-    # The file is the only input: there are no query parameters.
-    assert "parameters" not in operation

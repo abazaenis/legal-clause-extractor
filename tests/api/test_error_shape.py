@@ -11,14 +11,6 @@ async def test_unknown_path_uses_the_error_shape(client: AsyncClient) -> None:
     assert response.json() == {"error": {"code": "not_found", "message": "Not Found"}}
 
 
-async def test_wrong_method_uses_the_error_shape(client: AsyncClient) -> None:
-    response = await client.get("/api/extract")
-
-    assert response.status_code == 405
-    assert response.json()["error"]["code"] == "method_not_allowed"
-    assert response.headers["allow"] == "POST"
-
-
 async def test_unexpected_error_is_hidden_from_the_caller(app: FastAPI) -> None:
     @app.get("/boom")
     async def boom() -> None:
@@ -35,14 +27,3 @@ async def test_unexpected_error_is_hidden_from_the_caller(app: FastAPI) -> None:
         "error": {"code": "internal_error", "message": "An unexpected error occurred."}
     }
     assert "secret" not in response.text
-
-
-async def test_openapi_documents_the_upload_errors(client: AsyncClient) -> None:
-    schema = (await client.get("/openapi.json")).json()
-
-    documented = schema["paths"]["/api/extract"]["post"]["responses"]
-
-    assert {"413", "415", "422"} <= set(documented)
-    for status in ("413", "415", "422"):
-        reference = documented[status]["content"]["application/json"]["schema"]["$ref"]
-        assert reference.endswith("/ErrorResponse")

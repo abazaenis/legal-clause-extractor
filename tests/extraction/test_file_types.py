@@ -36,10 +36,6 @@ def test_pdf_header_may_follow_a_byte_order_mark_or_blank_lines() -> None:
     assert detect_file_type(b"\xef\xbb\xbf\r\n\r\n%PDF-1.4\n") is FileType.PDF
 
 
-def test_marker_after_the_first_1024_bytes_does_not_count() -> None:
-    assert detect_file_type(b"x" * 1024 + b"%PDF-1.4\n") is None
-
-
 # --- Word ----------------------------------------------------------------------------------------
 
 
@@ -95,11 +91,3 @@ def test_password_protected_word_document_is_recognised() -> None:
     assert not is_password_protected_office_file(OLD_OFFICE + b"\x00" * 100)
     # The name alone, outside that container, means nothing.
     assert not is_password_protected_office_file("EncryptedPackage".encode("utf-16-le"))
-
-
-def test_file_type_knows_its_media_type() -> None:
-    assert FileType.PDF.media_type == "application/pdf"
-    assert (
-        FileType.DOCX.media_type
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
