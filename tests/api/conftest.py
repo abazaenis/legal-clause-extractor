@@ -12,11 +12,11 @@ from app.main import create_app
 
 @pytest.fixture
 def settings() -> Settings:
-    """Settings with an upload limit small enough to exceed with a few bytes.
+    """Settings with limits small enough for a test to exceed cheaply.
 
     `_env_file=None` keeps a developer's local .env file out of the tests.
     """
-    return Settings(max_upload_bytes=1024, _env_file=None)
+    return Settings(max_upload_bytes=64 * 1024, max_pages=3, _env_file=None)
 
 
 @pytest.fixture

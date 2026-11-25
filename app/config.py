@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Largest file accepted by the upload endpoint, in bytes. The default is 20 MB.
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
+    # Longest document accepted, in pages. Only applies to formats that have pages.
+    max_pages: int = Field(default=300, gt=0)
+
 
 @lru_cache
 def get_settings() -> Settings:

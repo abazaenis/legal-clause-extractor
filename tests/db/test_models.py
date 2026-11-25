@@ -92,6 +92,22 @@ async def test_json_columns_default_to_empty_lists(session: AsyncSession) -> Non
     assert extraction.page_noise == []
 
 
+async def test_document_without_pages_can_be_stored(session: AsyncSession) -> None:
+    # A format such as a Word document has no page count and no page ranges.
+    extraction = make_extraction(
+        page_count=None, clauses=[make_clause(0, start_page=None, end_page=None)]
+    )
+    session.add(extraction)
+    await session.commit()
+    session.expunge_all()
+
+    loaded = await session.scalar(select(Extraction).options(selectinload(Extraction.clauses)))
+
+    assert loaded is not None
+    assert loaded.page_count is None
+    assert (loaded.clauses[0].start_page, loaded.clauses[0].end_page) == (None, None)
+
+
 async def test_ids_sort_by_creation_order(session: AsyncSession) -> None:
     first, second = make_extraction(), make_extraction()
     session.add(first)
@@ -190,6 +206,8 @@ async def test_clause_must_belong_to_an_existing_extraction(session: AsyncSessio
         pytest.param({"start_line": 5, "end_line": 4}, id="line range reversed"),
         pytest.param({"start_page": 0, "end_page": 0}, id="page numbers start at one"),
         pytest.param({"start_page": 2, "end_page": 1}, id="page range reversed"),
+        pytest.param({"start_page": 1, "end_page": None}, id="start page without end page"),
+        pytest.param({"start_page": None, "end_page": 1}, id="end page without start page"),
     ],
 )
 async def test_check_constraints_reject_invalid_clauses(

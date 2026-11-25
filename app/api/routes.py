@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, UploadFile, status
 
-from app.api.dependencies import SettingsDependency
+from app.api.dependencies import ParserFactoryDependency, SettingsDependency
 from app.api.schemas import ErrorResponse
 from app.api.upload import read_upload
 from app.extraction.service import extract_document
@@ -22,11 +22,12 @@ _UPLOAD_ERRORS: dict[int | str, dict[str, Any]] = {
     },
     status.HTTP_422_UNPROCESSABLE_CONTENT: {
         "model": ErrorResponse,
-        "description": "The `file` field is missing, or the file is empty.",
+        "description": "The `file` field is missing, or the file cannot be used: it is "
+        "empty, password-protected, damaged, too long, or has no readable text.",
     },
     status.HTTP_501_NOT_IMPLEMENTED: {
         "model": ErrorResponse,
-        "description": "The file is valid, but clause extraction is not built yet.",
+        "description": "The file was parsed, but clause extraction is not built yet.",
     },
 }
 
@@ -40,11 +41,12 @@ _UPLOAD_ERRORS: dict[int | str, dict[str, Any]] = {
 async def extract(
     file: Annotated[UploadFile, File(description="The contract, as a PDF file.")],
     settings: SettingsDependency,
+    parsers: ParserFactoryDependency,
 ) -> None:
     """Upload one contract as multipart form data, in a field named `file`.
 
     The file is checked before anything else happens: its size, that it is not empty,
-    and that its content is a PDF.
+    and that its content is a PDF. It is then parsed into numbered lines.
     """
     source = await read_upload(file, max_bytes=settings.max_upload_bytes)
-    await extract_document(source)
+    await extract_document(source, parsers)
